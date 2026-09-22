@@ -451,14 +451,11 @@ function findOcclusionTolerantBox(
   // evidence from the outer ring so the central 3x3 black block alone can
   // never become a valid marker.
   const outerCells: { row: number; col: number }[] = [];
-  const innerCells: { row: number; col: number }[] = [];
 
   for (let row = 0; row < 7; row++) {
     for (let col = 0; col < 7; col++) {
       if (row === 0 || row === 6 || col === 0 || col === 6) {
         outerCells.push({ row, col });
-      } else {
-        innerCells.push({ row, col });
       }
     }
   }
@@ -504,7 +501,7 @@ function findOcclusionTolerantBox(
             if (isOuter) {
               // A visible black outer cell is especially strong evidence
               // that this is the actual marker rather than the center block.
-              if (observed === Boolean(expected)) outerMatches++;
+              if (observed === expected) outerMatches++;
               outerKnown++;
             }
           }
