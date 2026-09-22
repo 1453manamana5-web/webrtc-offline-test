@@ -986,8 +986,171 @@ function ObliqueTestReceiver() {
   );
 }
 
+
+const FRAME_SIZE = 24;
+
+const FRAME_ANCHORS = [
+  [0, 0], [0, 21], [21, 0], [21, 21],
+  [0, 11], [11, 0], [11, 21], [21, 11],
+];
+
+const TEST_FRAMES = [
+  {
+    type: "STATUS",
+    id: 1,
+    payload: "ENTRY-A|62|4",
+  },
+  {
+    type: "TICKET",
+    id: 2,
+    payload: "A00123|E|175852",
+  },
+  {
+    type: "TICKET",
+    id: 3,
+    payload: "A00124|E|175901",
+  },
+  {
+    type: "STATUS",
+    id: 4,
+    payload: "ENTRY-A|64|0",
+  },
+];
+
+function makeCommunicationFrame(frame: typeof TEST_FRAMES[number]) {
+  const cells = Array.from({ length: FRAME_SIZE }, () =>
+    Array.from({ length: FRAME_SIZE }, () => 0),
+  );
+
+  // Distributed discovery anchors. They are intentionally separated so
+  // partial occlusion does not remove all geometry at once.
+  for (const [row, col] of FRAME_ANCHORS) {
+    for (let y = 0; y < 3; y++) {
+      for (let x = 0; x < 3; x++) {
+        const edge = y === 0 || y === 2 || x === 0 || x === 2;
+        cells[row + y][col + x] = edge ? 1 : 0;
+      }
+    }
+  }
+
+  // Orientation asymmetry: one small marker distinguishes the frame's
+  // rotation without creating a QR-like large corner block.
+  cells[4][4] = 1;
+  cells[4][5] = 1;
+  cells[5][4] = 0;
+  cells[5][5] = 1;
+
+  // Frame type + sequence are distributed through the central area.
+  const header = [
+    frame.type === "STATUS" ? 1 : 0,
+    frame.type === "TICKET" ? 1 : 0,
+    (frame.id >> 0) & 1,
+    (frame.id >> 1) & 1,
+    (frame.id >> 2) & 1,
+    (frame.id >> 3) & 1,
+  ];
+
+  const headerCells = [
+    [4, 9], [4, 10], [4, 11],
+    [5, 9], [5, 10], [5, 11],
+  ];
+
+  header.forEach((bit, i) => {
+    const [row, col] = headerCells[i];
+    cells[row][col] = bit;
+  });
+
+  // Payload is repeated into separated blocks. This is only a visual
+  // prototype; the real protocol will add CRC/FEC later.
+  const bytes = new TextEncoder().encode(frame.payload);
+  const dataBits: number[] = [];
+  for (const byte of bytes) {
+    for (let bit = 7; bit >= 0; bit--) {
+      dataBits.push((byte >> bit) & 1);
+    }
+  }
+
+  const dataPositions: [number, number][] = [];
+  for (let row = 7; row <= 16; row++) {
+    for (let col = 7; col <= 16; col++) {
+      dataPositions.push([row, col]);
+    }
+  }
+
+  for (let i = 0; i < dataPositions.length; i++) {
+    const [row, col] = dataPositions[i];
+    cells[row][col] = dataBits[i % dataBits.length] ?? 0;
+  }
+
+  // Small repeated parity-like samples around the data area.
+  for (let i = 0; i < 12; i++) {
+    const bit = dataBits[(i * 13) % dataBits.length] ?? 0;
+    cells[7 + (i % 6)][18 + Math.floor(i / 6)] = bit;
+  }
+
+  return cells;
+}
+
+function CommunicationFrame() {
+  const [frameIndex, setFrameIndex] = useState(0);
+  const frame = TEST_FRAMES[frameIndex];
+  const cells = makeCommunicationFrame(frame);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setFrameIndex((current) => (current + 1) % TEST_FRAMES.length);
+    }, 900);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  return (
+    <div className="optical-panel">
+      <div className="mode-label">光通信フレーム試作</div>
+      <h2>目立たない通信パターン</h2>
+      <p className="hint">
+        24×24の分散型フレーム。四隅だけに情報を集中させず、画面の一部が隠れても残りから復元できる構造を試します。
+      </p>
+
+      <div className="communication-board">
+        <div className="communication-grid">
+          {cells.flatMap((row, rowIndex) =>
+            row.map((bit, colIndex) => (
+              <span
+                key={`${rowIndex}-${colIndex}`}
+                className={bit ? "communication-cell on" : "communication-cell"}
+              />
+            )),
+          )}
+        </div>
+      </div>
+
+      <div className="frame-info">
+        <div>
+          <span>種別</span>
+          <strong>{frame.type}</strong>
+        </div>
+        <div>
+          <span>FRAME</span>
+          <strong>{frame.id} / {TEST_FRAMES.length}</strong>
+        </div>
+        <div>
+          <span>DATA</span>
+          <strong>{frame.payload}</strong>
+        </div>
+      </div>
+
+      <div className="debug-panel">
+        <div className="debug-title">現在の試作</div>
+        <div className="debug-info">
+          発見領域 → 位置・向き → ヘッダー → データ → 冗長領域
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function App() {
-  const [mode, setMode] = useState<"select" | "send" | "receive" | "oblique">("select");
+  const [mode, setMode] = useState<"select" | "send" | "receive" | "oblique" | "frame">("select");
 
   return (
     <main className="app">
@@ -1013,12 +1176,17 @@ function App() {
               <strong>四隅を探す</strong>
               <small>7×7認識なしの基礎テスト</small>
             </button>
+            <button className="role-button" onClick={() => setMode("frame")}>
+              <span>光通信フレーム</span>
+              <strong>模様を試す</strong>
+              <small>24×24・分散型通信パターン</small>
+            </button>
           </div>
         )}
 
         {mode !== "select" && (
           <>
-            {mode === "send" ? <Sender /> : mode === "receive" ? <Receiver /> : <ObliqueTestReceiver />}
+            {mode === "send" ? <Sender /> : mode === "receive" ? <Receiver /> : mode === "oblique" ? <ObliqueTestReceiver /> : <CommunicationFrame />}
             <button className="reset" onClick={() => setMode("select")}>最初に戻る</button>
           </>
         )}
