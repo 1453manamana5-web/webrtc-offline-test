@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 
-const MARKER_SIZE = 7;
 const MARKER = [
   [1,1,1,1,1,1,1],
   [1,0,0,0,0,0,1],
@@ -11,13 +10,13 @@ const MARKER = [
   [1,1,1,1,1,1,1],
 ];
 
+const INNER = MARKER.flat();
+
 function Marker() {
   return (
     <div className="marker-board">
       <div className="marker-grid">
-        {MARKER.flatMap((row, y) => row.map((bit, x) => (
-          <span key={`${x}-${y}`} className={bit ? "marker-cell on" : "marker-cell"} />
-        )))}
+        {INNER.map((bit, i) => <span key={i} className={bit ? "marker-cell on" : "marker-cell"} />)}
       </div>
       <div className="marker-dot" />
     </div>
@@ -28,10 +27,10 @@ function Sender() {
   return (
     <div className="optical-panel">
       <div className="mode-label">送信側</div>
-      <h2>独自マーカー</h2>
-      <p className="hint">受信側のカメラに、このマーカーを映します。まずは「見つける」だけをテストします。</p>
+      <h2>形状認識テスト</h2>
+      <p className="hint">このマーカー特有の「外枠＋中央形状＋右下の目印」を認識します。</p>
       <Marker />
-      <div className="detect-marker">MARKER DETECTION TEST</div>
+      <div className="detect-marker">SHAPE MATCH TEST</div>
     </div>
   );
 }
@@ -78,7 +77,6 @@ function Receiver() {
       const image = ctx.getImageData(0, 0, size, size);
       const data = image.data;
 
-      // 画像全体を粗く2値化し、黒い領域の連結成分を探す。
       const block = 4;
       const w = size / block;
       const h = size / block;
@@ -89,26 +87,24 @@ function Receiver() {
           let total = 0;
           for (let y = 0; y < block; y++) {
             for (let x = 0; x < block; x++) {
-              const px = ((by * block + y) * size + bx * block + x) * 4;
-              total += (data[px] + data[px + 1] + data[px + 2]) / 3;
+              const p = ((by * block + y) * size + bx * block + x) * 4;
+              total += (data[p] + data[p + 1] + data[p + 2]) / 3;
             }
           }
           gray[by * w + bx] = total / (block * block);
         }
       }
 
-      const values = Array.from(gray);
-      const min = Math.min(...values);
-      const max = Math.max(...values);
-      const threshold = min + (max - min) * 0.32;
+      const min = Math.min(...Array.from(gray));
+      const max = Math.max(...Array.from(gray));
+      const threshold = min + (max - min) * 0.45;
       const dark = new Uint8Array(w * h);
       for (let i = 0; i < gray.length; i++) dark[i] = gray[i] < threshold ? 1 : 0;
 
-      // 黒領域の連結成分。小さすぎるものは無視する。
       const seen = new Uint8Array(w * h);
       let bestScore = 0;
-      let bestBox = "";
       let bestArea = 0;
+      let bestBox = "";
 
       for (let start = 0; start < dark.length; start++) {
         if (!dark[start] || seen[start]) continue;
@@ -129,8 +125,7 @@ function Receiver() {
           minY = Math.min(minY, y);
           maxY = Math.max(maxY, y);
 
-          const neighbors = [p - 1, p + 1, p - w, p + w];
-          for (const n of neighbors) {
+          for (const n of [p - 1, p + 1, p - w, p + w]) {
             if (n < 0 || n >= dark.length || seen[n] || !dark[n]) continue;
             const nx = n % w;
             const ny = Math.floor(n / w);
@@ -142,23 +137,52 @@ function Receiver() {
 
         const bw = maxX - minX + 1;
         const bh = maxY - minY + 1;
-        const fill = area / (bw * bh);
-        const ratio = bw / bh;
+        if (area < 80 || bw < 12 || bh < 12 || bw > 65 || bh > 65) continue;
 
-        // 四角形に近い、十分大きな黒領域を候補にする。
-        if (area >= 40 && bw >= 8 && bh >= 8 && ratio > 0.65 && ratio < 1.5 && fill > 0.35) {
-          const score = Math.min(1, area / 1000) * Math.min(1, fill / 0.65);
-          if (score > bestScore) {
-            bestScore = score;
-            bestArea = area;
-            bestBox = `${minX},${minY} → ${maxX},${maxY}`;
+        const ratio = bw / bh;
+        const fill = area / (bw * bh);
+        if (ratio < 0.72 || ratio > 1.28 || fill < 0.45) continue;
+
+        // 候補の外接矩形を7×7に正規化し、マーカー固有の形状と比較する。
+        const sample: number[] = [];
+        for (let row = 0; row < 7; row++) {
+          for (let col = 0; col < 7; col++) {
+            const px = Math.floor(minX + ((col + 0.5) / 7) * bw);
+            const py = Math.floor(minY + ((row + 0.5) / 7) * bh);
+            sample.push(gray[py * w + px] < threshold ? 1 : 0);
           }
+        }
+
+        let matches = 0;
+        for (let i = 0; i < INNER.length; i++) {
+          if (sample[i] === INNER[i]) matches++;
+        }
+
+        const shapeScore = matches / INNER.length;
+
+        // 右下の小さな黒点も候補領域の外側にあるか確認。
+        const dotX = Math.floor(minX + bw * 1.12);
+        const dotY = Math.floor(minY + bh * 1.12);
+        let dotDark = false;
+        for (let dy = -2; dy <= 2; dy++) {
+          for (let dx = -2; dx <= 2; dx++) {
+            const x = dotX + dx;
+            const y = dotY + dy;
+            if (x >= 0 && x < w && y >= 0 && y < h && gray[y * w + x] < threshold) dotDark = true;
+          }
+        }
+
+        const score = shapeScore * 0.85 + (dotDark ? 0.15 : 0);
+        if (score > bestScore) {
+          bestScore = score;
+          bestArea = area;
+          bestBox = `${minX},${minY} → ${maxX},${maxY}`;
         }
       }
 
-      const isFound = bestScore > 0.18 && bestArea >= 40;
+      const isFound = bestScore >= 0.82 && bestArea >= 80;
       setFound(isFound);
-      setInfo(isFound ? `候補発見 / 面積 ${bestArea} / ${bestBox}` : `探索中 / 明暗差 ${Math.round(max - min)}`);
+      setInfo(bestScore > 0 ? `形状一致 ${Math.round(bestScore * 100)}% / 面積 ${bestArea} / ${bestBox}` : `探索中 / 明暗差 ${Math.round(max - min)}`);
     }
 
     frameRef.current = requestAnimationFrame(scan);
@@ -192,7 +216,7 @@ function Receiver() {
     <div className="optical-panel">
       <div className="mode-label">受信側</div>
       <h2>マーカーを探す</h2>
-      <p className="hint">模様を中央に合わせる必要はありません。カメラ画像全体から候補を探します。</p>
+      <p className="hint">画像全体から候補を探し、その形が本物のマーカーに近いか判定します。</p>
       <div className={`camera-wrap ${found ? "marker-found" : ""}`}>
         <video ref={videoRef} muted playsInline />
         <div className="scan-hud">
@@ -206,7 +230,7 @@ function Receiver() {
         <button className="secondary" onClick={stop}>カメラを停止</button>
       )}
       <div className={found ? "receive-result success" : "receive-result"}>
-        <span>{found ? "独自マーカー候補を発見" : "マーカー検出待ち"}</span>
+        <span>{found ? "マーカー形状を確認" : "マーカー検出待ち"}</span>
         <strong>{found ? "FOUND" : "—"}</strong>
       </div>
       <div className="debug-panel">
@@ -224,21 +248,21 @@ function App() {
   return (
     <main className="app">
       <section className="card">
-        <div className="eyebrow">OPTICAL MARKER DETECTION TEST</div>
-        <h1>独自マーカー検出</h1>
-        <p className="sub">まずは画像の中から「認証模様そのもの」を発見できるか確認します。</p>
+        <div className="eyebrow">OPTICAL MARKER SHAPE TEST</div>
+        <h1>独自マーカー形状認識</h1>
+        <p className="sub">黒い四角を探すのではなく、マーカー固有の形を確認します。</p>
 
         {mode === "select" && (
           <div className="role-grid">
             <button className="role-button" onClick={() => setMode("send")}>
               <span>送信側</span>
               <strong>模様を表示</strong>
-              <small>検出用の独自マーカー</small>
+              <small>形状認識用マーカー</small>
             </button>
             <button className="role-button" onClick={() => setMode("receive")}>
               <span>受信側</span>
               <strong>カメラで探す</strong>
-              <small>画像全体から自動探索</small>
+              <small>形状を照合して判定</small>
             </button>
           </div>
         )}
