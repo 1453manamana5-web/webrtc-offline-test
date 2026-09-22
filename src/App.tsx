@@ -29,10 +29,10 @@ function Sender() {
   return (
     <div className="optical-panel">
       <div className="mode-label">送信側</div>
-      <h2>位置検出テスト</h2>
-      <p className="hint">マーカーを見つけたら、その位置と大きさを画面上に表示します。</p>
+      <h2>向き・角度検出テスト</h2>
+      <p className="hint">マーカー右下の目印を使って、位置・大きさ・向きを推定します。</p>
       <Marker />
-      <div className="detect-marker">POSITION DETECTION TEST</div>
+      <div className="detect-marker">ORIENTATION DETECTION TEST</div>
     </div>
   );
 }
@@ -48,6 +48,7 @@ function Receiver() {
   const [found, setFound] = useState(false);
   const [info, setInfo] = useState("—");
   const [position, setPosition] = useState("—");
+  const [orientation, setOrientation] = useState("—");
   const [error, setError] = useState("");
 
   const stop = () => {
@@ -63,6 +64,7 @@ function Receiver() {
     offCountRef.current = 0;
     setFound(false);
     setPosition("—");
+    setOrientation("—");
     setRunning(false);
   };
 
@@ -120,6 +122,8 @@ function Receiver() {
       let bestCenterY = 0;
       let bestWidth = 0;
       let bestHeight = 0;
+      let bestAngle = 0;
+      let bestDotScore = 0;
 
       for (let start = 0; start < dark.length; start++) {
         if (!dark[start] || seen[start]) continue;
@@ -173,27 +177,62 @@ function Receiver() {
         }
 
         const shapeScore = matches / INNER.length;
+        if (shapeScore < 0.82) continue;
 
-        const dotX = Math.floor(minX + bw * 1.12);
-        const dotY = Math.floor(minY + bh * 1.12);
-        let dotDark = false;
-        for (let dy = -2; dy <= 2; dy++) {
-          for (let dx = -2; dx <= 2; dx++) {
-            const x = dotX + dx;
-            const y = dotY + dy;
-            if (x >= 0 && x < w && y >= 0 && y < h && gray[y * w + x] < threshold) dotDark = true;
+        // 外枠の中心から周囲を探索し、右下の目印に相当する小さな黒領域を探す。
+        // 目印はマーカー本体から少し離れているので、外枠と接続していない。
+        const cx = (minX + maxX + 1) / 2;
+        const cy = (minY + maxY + 1) / 2;
+        const radiusMin = Math.min(bw, bh) * 0.62;
+        const radiusMax = Math.min(bw, bh) * 1.05;
+        const candidates: { x: number; y: number; score: number }[] = [];
+
+        for (let y = Math.max(0, Math.floor(cy - radiusMax)); y <= Math.min(h - 1, Math.ceil(cy + radiusMax)); y++) {
+          for (let x = Math.max(0, Math.floor(cx - radiusMax)); x <= Math.min(w - 1, Math.ceil(cx + radiusMax)); x++) {
+            const dx = x - cx;
+            const dy = y - cy;
+            const distance = Math.hypot(dx, dy);
+            if (distance < radiusMin || distance > radiusMax || dark[y * w + x] === 0) continue;
+
+            // マーカー本体の外側にある黒画素を、近さと小ささで候補化する。
+            const direction = Math.atan2(dy, dx);
+            const distanceScore = 1 - Math.abs(distance - Math.min(bw, bh) * 0.76) / (Math.min(bw, bh) * 0.30);
+            candidates.push({ x, y, score: Math.max(0, distanceScore) });
+            if (candidates.length > 500) break;
+            void direction;
+          }
+          if (candidates.length > 500) break;
+        }
+
+        let dotX = 0;
+        let dotY = 0;
+        let dotScore = 0;
+        for (const candidate of candidates) {
+          if (candidate.score > dotScore) {
+            dotScore = candidate.score;
+            dotX = candidate.x;
+            dotY = candidate.y;
           }
         }
 
-        const score = shapeScore * 0.85 + (dotDark ? 0.15 : 0);
+        // 本物の目印なら中心から右下方向に来る。画面上の角度を算出する。
+        let angle = 0;
+        if (dotScore > 0) {
+          angle = Math.atan2(dotY - cy, dotX - cx) * 180 / Math.PI;
+          if (angle < 0) angle += 360;
+        }
+
+        const score = shapeScore * 0.85 + dotScore * 0.15;
         if (score > bestScore) {
           bestScore = score;
           bestArea = area;
           bestBox = `${minX},${minY} → ${maxX},${maxY}`;
-          bestCenterX = (minX + maxX + 1) / 2;
-          bestCenterY = (minY + maxY + 1) / 2;
+          bestCenterX = cx;
+          bestCenterY = cy;
           bestWidth = bw;
           bestHeight = bh;
+          bestAngle = angle;
+          bestDotScore = dotScore;
         }
       }
 
@@ -209,6 +248,12 @@ function Receiver() {
 
         setPosition(`中心 X ${normalizedX}% / Y ${normalizedY}% / サイズ ${sizePercent}%`);
 
+        if (bestDotScore > 0.2) {
+          setOrientation(`目印方向 ${Math.round(bestAngle)}°`);
+        } else {
+          setOrientation("目印を探索中");
+        }
+
         if (!foundRef.current && onCountRef.current >= FOUND_ON_FRAMES) {
           foundRef.current = true;
           setFound(true);
@@ -220,6 +265,7 @@ function Receiver() {
           foundRef.current = false;
           setFound(false);
           setPosition("—");
+          setOrientation("—");
         }
       }
 
@@ -241,6 +287,7 @@ function Receiver() {
       onCountRef.current = 0;
       offCountRef.current = 0;
       setPosition("—");
+      setOrientation("—");
 
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
@@ -266,8 +313,8 @@ function Receiver() {
   return (
     <div className="optical-panel">
       <div className="mode-label">受信側</div>
-      <h2>位置を探す</h2>
-      <p className="hint">マーカーを動かすと、中心位置と大きさがリアルタイムで変化します。</p>
+      <h2>向きを探す</h2>
+      <p className="hint">マーカーを回すと、右下の目印の方向から角度を推定します。</p>
 
       <div className={`camera-wrap ${found ? "marker-found" : ""}`}>
         <video ref={videoRef} muted playsInline />
@@ -285,13 +332,15 @@ function Receiver() {
       )}
 
       <div className={found ? "receive-result success" : "receive-result"}>
-        <span>{found ? "マーカー位置を取得" : "マーカー検出待ち"}</span>
+        <span>{found ? "マーカーの向きを取得" : "マーカー検出待ち"}</span>
         <strong>{found ? "FOUND" : "—"}</strong>
       </div>
 
       <div className="debug-panel">
         <div className="debug-title">位置情報</div>
         <div className="debug-info">{position}</div>
+        <div className="debug-title">向き</div>
+        <div className="debug-info">{orientation}</div>
         <div className="debug-title">検出情報</div>
         <div className="debug-info">{info}</div>
       </div>
@@ -307,21 +356,21 @@ function App() {
   return (
     <main className="app">
       <section className="card">
-        <div className="eyebrow">OPTICAL MARKER POSITION TEST</div>
-        <h1>独自マーカー位置検出</h1>
-        <p className="sub">マーカーを発見したあと、その位置と大きさを取得します。</p>
+        <div className="eyebrow">OPTICAL MARKER ORIENTATION TEST</div>
+        <h1>独自マーカー向き検出</h1>
+        <p className="sub">マーカーを発見したあと、位置・大きさ・向きを取得します。</p>
 
         {mode === "select" && (
           <div className="role-grid">
             <button className="role-button" onClick={() => setMode("send")}>
               <span>送信側</span>
               <strong>模様を表示</strong>
-              <small>位置検出用マーカー</small>
+              <small>向き検出用マーカー</small>
             </button>
             <button className="role-button" onClick={() => setMode("receive")}>
               <span>受信側</span>
               <strong>カメラで探す</strong>
-              <small>位置とサイズを取得</small>
+              <small>位置・大きさ・向きを取得</small>
             </button>
           </div>
         )}
