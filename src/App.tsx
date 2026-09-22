@@ -29,10 +29,10 @@ function Sender() {
   return (
     <div className="optical-panel">
       <div className="mode-label">送信側</div>
-      <h2>形状認識テスト</h2>
-      <p className="hint">このマーカー特有の「外枠＋中央形状＋右下の目印」を認識します。</p>
+      <h2>位置検出テスト</h2>
+      <p className="hint">マーカーを見つけたら、その位置と大きさを画面上に表示します。</p>
       <Marker />
-      <div className="detect-marker">SHAPE MATCH TEST</div>
+      <div className="detect-marker">POSITION DETECTION TEST</div>
     </div>
   );
 }
@@ -47,6 +47,7 @@ function Receiver() {
   const [running, setRunning] = useState(false);
   const [found, setFound] = useState(false);
   const [info, setInfo] = useState("—");
+  const [position, setPosition] = useState("—");
   const [error, setError] = useState("");
 
   const stop = () => {
@@ -61,6 +62,7 @@ function Receiver() {
     onCountRef.current = 0;
     offCountRef.current = 0;
     setFound(false);
+    setPosition("—");
     setRunning(false);
   };
 
@@ -114,6 +116,10 @@ function Receiver() {
       let bestScore = 0;
       let bestArea = 0;
       let bestBox = "";
+      let bestCenterX = 0;
+      let bestCenterY = 0;
+      let bestWidth = 0;
+      let bestHeight = 0;
 
       for (let start = 0; start < dark.length; start++) {
         if (!dark[start] || seen[start]) continue;
@@ -184,6 +190,10 @@ function Receiver() {
           bestScore = score;
           bestArea = area;
           bestBox = `${minX},${minY} → ${maxX},${maxY}`;
+          bestCenterX = (minX + maxX + 1) / 2;
+          bestCenterY = (minY + maxY + 1) / 2;
+          bestWidth = bw;
+          bestHeight = bh;
         }
       }
 
@@ -192,6 +202,13 @@ function Receiver() {
       if (candidateFound) {
         onCountRef.current += 1;
         offCountRef.current = 0;
+
+        const normalizedX = Math.round((bestCenterX / w) * 100);
+        const normalizedY = Math.round((bestCenterY / h) * 100);
+        const sizePercent = Math.round(((bestWidth + bestHeight) / 2 / w) * 100);
+
+        setPosition(`中心 X ${normalizedX}% / Y ${normalizedY}% / サイズ ${sizePercent}%`);
+
         if (!foundRef.current && onCountRef.current >= FOUND_ON_FRAMES) {
           foundRef.current = true;
           setFound(true);
@@ -202,12 +219,13 @@ function Receiver() {
         if (foundRef.current && offCountRef.current >= FOUND_OFF_FRAMES) {
           foundRef.current = false;
           setFound(false);
+          setPosition("—");
         }
       }
 
       setInfo(
         bestScore > 0
-          ? `形状一致 ${Math.round(bestScore * 100)}% / 面積 ${bestArea} / ${bestBox} / ${foundRef.current ? "安定検出" : "候補"}`
+          ? `形状一致 ${Math.round(bestScore * 100)}% / 面積 ${bestArea} / ${bestBox}`
           : `探索中 / 明暗差 ${Math.round(max - min)}`,
       );
     }
@@ -222,6 +240,8 @@ function Receiver() {
       foundRef.current = false;
       onCountRef.current = 0;
       offCountRef.current = 0;
+      setPosition("—");
+
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: { ideal: "environment" },
@@ -230,6 +250,7 @@ function Receiver() {
         },
         audio: false,
       });
+
       if (!videoRef.current) return;
       videoRef.current.srcObject = stream;
       await videoRef.current.play();
@@ -245,28 +266,36 @@ function Receiver() {
   return (
     <div className="optical-panel">
       <div className="mode-label">受信側</div>
-      <h2>マーカーを探す</h2>
-      <p className="hint">3フレーム連続で確認してFOUNDにし、5フレーム連続で見失うまで表示を維持します。</p>
+      <h2>位置を探す</h2>
+      <p className="hint">マーカーを動かすと、中心位置と大きさがリアルタイムで変化します。</p>
+
       <div className={`camera-wrap ${found ? "marker-found" : ""}`}>
         <video ref={videoRef} muted playsInline />
         <div className="scan-hud">
           <span>{found ? "MARKER FOUND" : "SEARCHING..."}</span>
         </div>
       </div>
+
       <canvas ref={canvasRef} className="hidden-canvas" />
+
       {!running ? (
         <button className="primary" onClick={start}>カメラを起動</button>
       ) : (
         <button className="secondary" onClick={stop}>カメラを停止</button>
       )}
+
       <div className={found ? "receive-result success" : "receive-result"}>
-        <span>{found ? "マーカー形状を確認" : "マーカー検出待ち"}</span>
+        <span>{found ? "マーカー位置を取得" : "マーカー検出待ち"}</span>
         <strong>{found ? "FOUND" : "—"}</strong>
       </div>
+
       <div className="debug-panel">
+        <div className="debug-title">位置情報</div>
+        <div className="debug-info">{position}</div>
         <div className="debug-title">検出情報</div>
         <div className="debug-info">{info}</div>
       </div>
+
       {error && <div className="error">{error}</div>}
     </div>
   );
@@ -278,21 +307,21 @@ function App() {
   return (
     <main className="app">
       <section className="card">
-        <div className="eyebrow">OPTICAL MARKER SHAPE TEST</div>
-        <h1>独自マーカー形状認識</h1>
-        <p className="sub">黒い四角を探すのではなく、マーカー固有の形を確認します。</p>
+        <div className="eyebrow">OPTICAL MARKER POSITION TEST</div>
+        <h1>独自マーカー位置検出</h1>
+        <p className="sub">マーカーを発見したあと、その位置と大きさを取得します。</p>
 
         {mode === "select" && (
           <div className="role-grid">
             <button className="role-button" onClick={() => setMode("send")}>
               <span>送信側</span>
               <strong>模様を表示</strong>
-              <small>形状認識用マーカー</small>
+              <small>位置検出用マーカー</small>
             </button>
             <button className="role-button" onClick={() => setMode("receive")}>
               <span>受信側</span>
               <strong>カメラで探す</strong>
-              <small>形状を照合して判定</small>
+              <small>位置とサイズを取得</small>
             </button>
           </div>
         )}
