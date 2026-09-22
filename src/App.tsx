@@ -117,7 +117,9 @@ function OpticalReceiver() {
       return;
     }
 
-    const size = Math.min(video.videoWidth, video.videoHeight);
+    // The sender pattern is placed inside the on-screen target frame.
+    // Sample the same centered square instead of the full camera crop.
+    const size = Math.min(video.videoWidth, video.videoHeight) * 0.70;
     const sx = (video.videoWidth - size) / 2;
     const sy = (video.videoHeight - size) / 2;
 
