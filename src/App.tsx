@@ -1149,8 +1149,129 @@ function CommunicationFrame() {
   );
 }
 
+
+function CommunicationReceiver() {
+  const videoRef=useRef<HTMLVideoElement|null>(null);
+  const canvasRef=useRef<HTMLCanvasElement|null>(null);
+  const raf=useRef<number|null>(null);
+  const tick=useRef(0);
+  const [running,setRunning]=useState(false);
+  const [found,setFound]=useState(false);
+  const [score,setScore]=useState(0);
+  const [type,setType]=useState("—");
+  const [id,setId]=useState("—");
+  const [payload,setPayload]=useState("—");
+  const [error,setError]=useState("");
+
+  const stop=()=>{
+    if(raf.current!==null) cancelAnimationFrame(raf.current);
+    raf.current=null;
+    const v=videoRef.current;
+    if(v?.srcObject instanceof MediaStream){v.srcObject.getTracks().forEach(t=>t.stop());v.srcObject=null;}
+    setRunning(false);setFound(false);setScore(0);setType("—");setId("—");setPayload("—");
+  };
+
+  const scan=()=>{
+    const v=videoRef.current, canvas=canvasRef.current;
+    if(!v||!canvas||v.readyState<2||!v.videoWidth){raf.current=requestAnimationFrame(scan);return;}
+    tick.current++;
+    if(tick.current%4!==0){raf.current=requestAnimationFrame(scan);return;}
+
+    const S=320,G=48;
+    canvas.width=S;canvas.height=S;
+    const ctx=canvas.getContext("2d",{willReadFrequently:true});
+    if(!ctx){raf.current=requestAnimationFrame(scan);return;}
+    const side=Math.min(v.videoWidth,v.videoHeight);
+    ctx.drawImage(v,(v.videoWidth-side)/2,(v.videoHeight-side)/2,side,side,0,0,S,S);
+    const img=ctx.getImageData(0,0,S,S).data;
+    const gray=new Uint8Array(G*G);let min=255,max=0;
+    for(let y=0;y<G;y++)for(let x=0;x<G;x++){
+      let t=0;
+      for(let yy=0;yy<Math.ceil(S/G);yy++)for(let xx=0;xx<Math.ceil(S/G);xx++){
+        const p=((y*7+yy)*S+x*7+xx)*4;
+        if(p<img.length)t+=(img[p]+img[p+1]+img[p+2])/3;
+      }
+      const val=t/49;gray[y*G+x]=val;min=Math.min(min,val);max=Math.max(max,val);
+    }
+    const th=min+(max-min)*.48,dark=gray.map(v=>v<th?1:0);
+
+    const anchors:[number,number][]=[];
+    for(const [r0,c0] of FRAME_ANCHORS)for(let y=0;y<3;y++)for(let x=0;x<3;x++)
+      if(y===0||y===2||x===0||x===2)anchors.push([r0+y,c0+x]);
+
+    let best=0,bx=0,by=0,bs=0;
+    for(let size=16;size<=42;size+=2)for(let y=0;y<=G-size;y+=2)for(let x=0;x<=G-size;x+=2){
+      let m=0;
+      for(const [rr,cc] of anchors){
+        const px=Math.min(G-1,Math.max(0,Math.floor(x+(cc+.5)/FRAME_SIZE*size)));
+        const py=Math.min(G-1,Math.max(0,Math.floor(y+(rr+.5)/FRAME_SIZE*size)));
+        if(dark[py*G+px])m++;
+      }
+      const s=m/anchors.length;
+      if(s>best){best=s;bx=x;by=y;bs=size;}
+    }
+
+    setScore(Math.round(best*100));
+    if(best<.78){
+      setFound(false);setType("—");setId("—");setPayload("—");
+      raf.current=requestAnimationFrame(scan);return;
+    }
+
+    const sample:number[]=[];
+    for(let row=0;row<FRAME_SIZE;row++)for(let col=0;col<FRAME_SIZE;col++){
+      const px=Math.min(G-1,Math.max(0,Math.floor(bx+(col+.5)/FRAME_SIZE*bs)));
+      const py=Math.min(G-1,Math.max(0,Math.floor(by+(row+.5)/FRAME_SIZE*bs)));
+      sample.push(dark[py*G+px]);
+    }
+
+    const h=[0,1,2,3,4,5,6,7].map(i=>i<6?
+      sample[[4*24+9,4*24+10,4*24+11,5*24+9,5*24+10,5*24+11][i]]:
+      sample[4*24+12+i-6]);
+    const t=h[0]?"STATUS":h[1]?"TICKET":"UNKNOWN";
+    let n=0;for(let i=0;i<4;i++)n|=h[2+i]<<i;
+    let len=0;for(let i=0;i<8;i++)len|=h[6+i]<<i;len=Math.min(12,len);
+
+    const bits:number[]=[];
+    for(let row=7;row<=16;row++)for(let col=7;col<=16;col++)bits.push(sample[row*24+col]);
+    const bytes:number[]=[];
+    for(let i=0;i<len;i++){let b=0;for(let k=0;k<8;k++)b=(b<<1)|(bits[i*8+k]??0);bytes.push(b);}
+    let text="";
+    try{text=new TextDecoder().decode(new Uint8Array(bytes));}catch{text="デコード失敗";}
+
+    setFound(true);setType(t);setId(String(n));setPayload(text||"—");
+    raf.current=requestAnimationFrame(scan);
+  };
+
+  const start=async()=>{
+    try{
+      setError("");tick.current=0;
+      const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"},width:{ideal:1280},height:{ideal:720}},audio:false});
+      if(!videoRef.current)return;
+      videoRef.current.srcObject=stream;await videoRef.current.play();
+      setRunning(true);raf.current=requestAnimationFrame(scan);
+    }catch(e){setError(e instanceof Error?e.message:"カメラを起動できませんでした。");}
+  };
+  useEffect(()=>()=>stop(),[]);
+
+  return <div className="optical-panel">
+    <div className="mode-label">光通信フレーム受信</div>
+    <h2>カメラで通信パターンを探す</h2>
+    <p className="hint">送信側iPadの24×24フレームを背面カメラで読み取り、フレーム番号とデータを復元します。</p>
+    <div className="camera-wrap"><video ref={videoRef} muted playsInline/><div className="scan-hud"><span>{found?"FRAME FOUND":"SEARCHING..."}</span></div></div>
+    <canvas ref={canvasRef} className="hidden-canvas"/>
+    {!running?<button className="primary" onClick={start}>背面カメラを起動</button>:<button className="secondary" onClick={stop}>カメラを停止</button>}
+    <div className={found?"receive-result success":"receive-result"}><span>{found?"通信フレームを検出":"通信フレーム検出待ち"}</span><strong>{found?"FOUND":"—"}</strong></div>
+    <div className="debug-panel">
+      <div className="debug-title">検出スコア</div><div className="debug-info">{score}%</div>
+      <div className="debug-title">種別 / FRAME</div><div className="debug-info">{type} / {id}</div>
+      <div className="debug-title">復元データ</div><div className="debug-info">{payload}</div>
+    </div>
+    {error&&<div className="error">{error}</div>}
+  </div>;
+}
+
 function App() {
-  const [mode, setMode] = useState<"select" | "send" | "receive" | "oblique" | "frame">("select");
+  const [mode, setMode] = useState<"select" | "send" | "receive" | "oblique" | "frame" | "frame-receive">("select");
 
   return (
     <main className="app">
@@ -1181,12 +1302,17 @@ function App() {
               <strong>模様を試す</strong>
               <small>24×24・分散型通信パターン</small>
             </button>
+            <button className="role-button" onClick={() => setMode("frame-receive")}>
+              <span>光通信フレーム</span>
+              <strong>カメラで受信</strong>
+              <small>背面カメラでデータを復元</small>
+            </button>
           </div>
         )}
 
         {mode !== "select" && (
           <>
-            {mode === "send" ? <Sender /> : mode === "receive" ? <Receiver /> : mode === "oblique" ? <ObliqueTestReceiver /> : <CommunicationFrame />}
+            {mode === "send" ? <Sender /> : mode === "receive" ? <Receiver /> : mode === "oblique" ? <ObliqueTestReceiver /> : mode === "frame-receive" ? <CommunicationReceiver /> : <CommunicationFrame />}
             <button className="reset" onClick={() => setMode("select")}>最初に戻る</button>
           </>
         )}
