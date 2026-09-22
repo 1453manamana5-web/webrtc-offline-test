@@ -134,7 +134,7 @@ function App() {
     try {
       setError("");
       setStatus("Answer作成中...");
-      const offer = decodeSignal(encodedOffer);
+      const offer = await decodeSignal(encodedOffer);
       if (offer.type !== "offer") throw new Error("Offerではありません。");
       const pc = createPeer();
       pc.ondatachannel = (event) => setupChannel(event.channel);
@@ -144,7 +144,8 @@ function App() {
       await waitForIceGatheringComplete(pc);
       const local = pc.localDescription;
       if (!local) throw new Error("Answerを取得できませんでした。");
-      setSignal(await encodeSignal({ type: "answer", sdp: local }));
+      const encoded = await encodeSignal({ type: "answer", sdp: local });
+      setSignal(encoded);
       setStatus("Answer準備完了。Aで読み取ってください。");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Answer作成に失敗しました。");
@@ -156,7 +157,7 @@ function App() {
     try {
       setError("");
       setStatus("Answer適用中...");
-      const answer = decodeSignal(encodedAnswer);
+      const answer = await decodeSignal(encodedAnswer);
       if (answer.type !== "answer") throw new Error("Answerではありません。");
       const pc = pcRef.current;
       if (!pc) throw new Error("先にOfferを作成してください。");
