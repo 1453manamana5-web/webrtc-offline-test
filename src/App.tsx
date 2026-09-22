@@ -433,12 +433,12 @@ function convexHull(points: { x: number; y: number }[]) {
 
 function ObliqueTestReceiver() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const sourceCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const warpCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const frameRef = useRef<number | null>(null);
   const [running, setRunning] = useState(false);
   const [found, setFound] = useState(false);
   const [corners, setCorners] = useState("—");
-  const [hullInfo, setHullInfo] = useState("—");
   const [error, setError] = useState("");
 
   const stop = () => {
@@ -452,170 +452,220 @@ function ObliqueTestReceiver() {
     setRunning(false);
     setFound(false);
     setCorners("—");
-    setHullInfo("—");
+  };
+
+  const warpPerspective = (
+    ctx: CanvasRenderingContext2D,
+    source: HTMLCanvasElement,
+    p: { x: number; y: number }[],
+    outputSize: number,
+  ) => {
+    const image = ctx.getImageData(0, 0, source.width, source.height);
+    const src = image.data;
+    const output = ctx.createImageData(outputSize, outputSize);
+    const dst = output.data;
+
+    const [tl, tr, br, bl] = p;
+    const topDx = tr.x - tl.x;
+    const topDy = tr.y - tl.y;
+    const rightDx = br.x - tr.x;
+    const rightDy = br.y - tr.y;
+    const bottomDx = br.x - bl.x;
+    const bottomDy = br.y - bl.y;
+    const leftDx = bl.x - tl.x;
+    const leftDy = bl.y - tl.y;
+
+    const widthTop = Math.hypot(topDx, topDy);
+    const widthBottom = Math.hypot(bottomDx, bottomDy);
+    const heightLeft = Math.hypot(leftDx, leftDy);
+    const heightRight = Math.hypot(rightDx, rightDy);
+    const topWidth = Math.max(1, widthTop);
+    const bottomWidth = Math.max(1, widthBottom);
+    const leftHeight = Math.max(1, heightLeft);
+    const rightHeight = Math.max(1, heightRight);
+
+    const sampleBilinear = (x: number, y: number) => {
+      const x0 = Math.floor(x);
+      const y0 = Math.floor(y);
+      const x1 = Math.min(source.width - 1, x0 + 1);
+      const y1 = Math.min(source.height - 1, y0 + 1);
+      const fx = x - x0;
+      const fy = y - y0;
+      const out = [0, 0, 0, 255];
+
+      for (let c = 0; c < 3; c++) {
+        const i00 = (y0 * source.width + x0) * 4 + c;
+        const i10 = (y0 * source.width + x1) * 4 + c;
+        const i01 = (y1 * source.width + x0) * 4 + c;
+        const i11 = (y1 * source.width + x1) * 4 + c;
+        out[c] =
+          src[i00] * (1 - fx) * (1 - fy) +
+          src[i10] * fx * (1 - fy) +
+          src[i01] * (1 - fx) * fy +
+          src[i11] * fx * fy;
+      }
+      return out;
+    };
+
+    for (let y = 0; y < outputSize; y++) {
+      const v = y / (outputSize - 1);
+      for (let x = 0; x < outputSize; x++) {
+        const u = x / (outputSize - 1);
+        const topX = tl.x + (tr.x - tl.x) * u;
+        const topY = tl.y + (tr.y - tl.y) * u;
+        const bottomX = bl.x + (br.x - bl.x) * u;
+        const bottomY = bl.y + (br.y - bl.y) * u;
+        const px = topX + (bottomX - topX) * v;
+        const py = topY + (bottomY - topY) * v;
+        const color = sampleBilinear(px, py);
+        const i = (y * outputSize + x) * 4;
+        dst[i] = color[0];
+        dst[i + 1] = color[1];
+        dst[i + 2] = color[2];
+        dst[i + 3] = 255;
+      }
+    }
+
+    ctx.putImageData(output, 0, 0);
   };
 
   const scan = () => {
     const video = videoRef.current;
-    const canvas = canvasRef.current;
-    if (!video || !canvas || video.readyState < 2 || !video.videoWidth) {
+    const sourceCanvas = sourceCanvasRef.current;
+    const warpCanvas = warpCanvasRef.current;
+    if (!video || !sourceCanvas || !warpCanvas || video.readyState < 2 || !video.videoWidth) {
       frameRef.current = requestAnimationFrame(scan);
       return;
     }
 
     const size = 320;
-    canvas.width = size;
-    canvas.height = size;
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    sourceCanvas.width = size;
+    sourceCanvas.height = size;
+    warpCanvas.width = 320;
+    warpCanvas.height = 320;
 
-    if (ctx) {
-      const sourceSize = Math.min(video.videoWidth, video.videoHeight);
-      const sx = (video.videoWidth - sourceSize) / 2;
-      const sy = (video.videoHeight - sourceSize) / 2;
-      ctx.drawImage(video, sx, sy, sourceSize, sourceSize, 0, 0, size, size);
+    const ctx = sourceCanvas.getContext("2d", { willReadFrequently: true });
+    const warpCtx = warpCanvas.getContext("2d");
+    if (!ctx || !warpCtx) {
+      frameRef.current = requestAnimationFrame(scan);
+      return;
+    }
 
-      const image = ctx.getImageData(0, 0, size, size);
-      const data = image.data;
-      const block = 4;
-      const w = size / block;
-      const h = size / block;
-      const gray = new Uint8Array(w * h);
+    const sourceSize = Math.min(video.videoWidth, video.videoHeight);
+    const sx = (video.videoWidth - sourceSize) / 2;
+    const sy = (video.videoHeight - sourceSize) / 2;
+    ctx.drawImage(video, sx, sy, sourceSize, sourceSize, 0, 0, size, size);
 
-      for (let by = 0; by < h; by++) {
-        for (let bx = 0; bx < w; bx++) {
-          let total = 0;
-          for (let y = 0; y < block; y++) {
-            for (let x = 0; x < block; x++) {
-              const p = ((by * block + y) * size + bx * block + x) * 4;
-              total += (data[p] + data[p + 1] + data[p + 2]) / 3;
-            }
-          }
-          gray[by * w + bx] = total / (block * block);
-        }
-      }
+    const image = ctx.getImageData(0, 0, size, size);
+    const data = image.data;
+    const block = 4;
+    const w = size / block;
+    const h = size / block;
+    const gray = new Uint8Array(w * h);
 
-      const min = Math.min(...Array.from(gray));
-      const max = Math.max(...Array.from(gray));
-      const threshold = min + (max - min) * 0.45;
-      const dark = new Uint8Array(w * h);
-      for (let i = 0; i < gray.length; i++) {
-        dark[i] = gray[i] < threshold ? 1 : 0;
-      }
-
-      const seen = new Uint8Array(w * h);
-      let bestArea = 0;
-      let bestPoints: { x: number; y: number }[] = [];
-
-      for (let start = 0; start < dark.length; start++) {
-        if (!dark[start] || seen[start]) continue;
-
-        const queue = [start];
-        seen[start] = 1;
-        let head = 0;
-        const points: { x: number; y: number }[] = [];
-
-        while (head < queue.length) {
-          const p = queue[head++];
-          const x = p % w;
-          const y = Math.floor(p / w);
-          points.push({ x, y });
-
-          for (const n of [p - 1, p + 1, p - w, p + w]) {
-            if (n < 0 || n >= dark.length || seen[n] || !dark[n]) continue;
-            const nx = n % w;
-            const ny = Math.floor(n / w);
-            if (Math.abs(nx - x) + Math.abs(ny - y) !== 1) continue;
-            seen[n] = 1;
-            queue.push(n);
+    for (let by = 0; by < h; by++) {
+      for (let bx = 0; bx < w; bx++) {
+        let total = 0;
+        for (let y = 0; y < block; y++) {
+          for (let x = 0; x < block; x++) {
+            const p = ((by * block + y) * size + bx * block + x) * 4;
+            total += (data[p] + data[p + 1] + data[p + 2]) / 3;
           }
         }
+        gray[by * w + bx] = total / (block * block);
+      }
+    }
 
-        if (points.length < 80 || points.length <= bestArea) continue;
+    const min = Math.min(...Array.from(gray));
+    const max = Math.max(...Array.from(gray));
+    const threshold = min + (max - min) * 0.45;
+    const dark = new Uint8Array(w * h);
+    for (let i = 0; i < gray.length; i++) dark[i] = gray[i] < threshold ? 1 : 0;
 
-        const minX = Math.min(...points.map((p) => p.x));
-        const maxX = Math.max(...points.map((p) => p.x));
-        const minY = Math.min(...points.map((p) => p.y));
-        const maxY = Math.max(...points.map((p) => p.y));
-        const bw = maxX - minX + 1;
-        const bh = maxY - minY + 1;
+    const seen = new Uint8Array(w * h);
+    let bestArea = 0;
+    let bestPoints: { x: number; y: number }[] = [];
 
-        if (bw < 12 || bh < 12 || bw > 75 || bh > 75) continue;
+    for (let start = 0; start < dark.length; start++) {
+      if (!dark[start] || seen[start]) continue;
+      const queue = [start];
+      seen[start] = 1;
+      let head = 0;
+      const points: { x: number; y: number }[] = [];
 
-        bestArea = points.length;
-        bestPoints = points;
+      while (head < queue.length) {
+        const p = queue[head++];
+        const x = p % w;
+        const y = Math.floor(p / w);
+        points.push({ x, y });
+        for (const n of [p - 1, p + 1, p - w, p + w]) {
+          if (n < 0 || n >= dark.length || seen[n] || !dark[n]) continue;
+          const nx = n % w;
+          const ny = Math.floor(n / w);
+          if (Math.abs(nx - x) + Math.abs(ny - y) !== 1) continue;
+          seen[n] = 1;
+          queue.push(n);
+        }
       }
 
-      ctx.clearRect(0, 0, size, size);
+      if (points.length < 80 || points.length <= bestArea) continue;
+      const minX = Math.min(...points.map((p) => p.x));
+      const maxX = Math.max(...points.map((p) => p.x));
+      const minY = Math.min(...points.map((p) => p.y));
+      const maxY = Math.max(...points.map((p) => p.y));
+      const bw = maxX - minX + 1;
+      const bh = maxY - minY + 1;
+      if (bw < 12 || bh < 12 || bw > 75 || bh > 75) continue;
+      bestArea = points.length;
+      bestPoints = points;
+    }
 
-      if (bestPoints.length > 0) {
-        const hull = convexHull(bestPoints);
+    if (bestPoints.length > 0) {
+      const hull = convexHull(bestPoints);
+      if (hull.length >= 4) {
+        const center = hull.reduce((sum, p) => ({ x: sum.x + p.x, y: sum.y + p.y }), { x: 0, y: 0 });
+        center.x /= hull.length;
+        center.y /= hull.length;
 
-        if (hull.length >= 4) {
-          const center = hull.reduce(
-            (sum, p) => ({ x: sum.x + p.x, y: sum.y + p.y }),
-            { x: 0, y: 0 },
-          );
-          center.x /= hull.length;
-          center.y /= hull.length;
+        const tl = hull.reduce((a, b) => (a.x + a.y < b.x + b.y ? a : b));
+        const br = hull.reduce((a, b) => (a.x + a.y > b.x + b.y ? a : b));
+        const tr = hull.reduce((a, b) => (a.x - a.y > b.x - b.y ? a : b));
+        const bl = hull.reduce((a, b) => (a.x - a.y < b.x - b.y ? a : b));
+        const points = [tl, tr, br, bl];
 
-          const cornersFound = hull
-            .map((p) => ({
-              ...p,
-              angle: Math.atan2(p.y - center.y, p.x - center.x),
-              distance: Math.hypot(p.x - center.x, p.y - center.y),
-            }))
-            .sort((a, b) => a.angle - b.angle);
+        ctx.strokeStyle = "#55c98a";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        points.forEach((p, i) => {
+          const x = (p.x + 0.5) * block;
+          const y = (p.y + 0.5) * block;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.closePath();
+        ctx.stroke();
 
-          const tl = cornersFound.reduce((a, b) => (a.x + a.y < b.x + b.y ? a : b));
-          const br = cornersFound.reduce((a, b) => (a.x + a.y > b.x + b.y ? a : b));
-          const tr = cornersFound.reduce((a, b) => (a.x - a.y > b.x - b.y ? a : b));
-          const bl = cornersFound.reduce((a, b) => (a.x - a.y < b.x - b.y ? a : b));
+        warpPerspective(warpCtx, sourceCanvas, points.map((p) => ({
+          x: (p.x + 0.5) * block,
+          y: (p.y + 0.5) * block,
+        })), 320);
 
-          const points = [tl, tr, br, bl];
-
-          ctx.strokeStyle = "#55c98a";
-          ctx.lineWidth = 3;
-          ctx.beginPath();
-          points.forEach((p, i) => {
-            const x = (p.x + 0.5) * block;
-            const y = (p.y + 0.5) * block;
-            if (i === 0) ctx.moveTo(x, y);
-            else ctx.lineTo(x, y);
-          });
-          ctx.closePath();
-          ctx.stroke();
-
-          ctx.fillStyle = "#55c98a";
-          points.forEach((p) => {
-            ctx.beginPath();
-            ctx.arc((p.x + 0.5) * block, (p.y + 0.5) * block, 5, 0, Math.PI * 2);
-            ctx.fill();
-          });
-
-          const names = ["左上", "右上", "右下", "左下"];
-          ctx.fillStyle = "#fff";
-          ctx.font = "bold 12px system-ui";
-          points.forEach((p, i) => {
-            ctx.fillText(names[i], (p.x + 0.5) * block + 7, (p.y + 0.5) * block - 7);
-          });
-
-          setFound(true);
-          setCorners(
-            points
-              .map((p, i) => `${names[i]} ${Math.round((p.x / w) * 100)}%,${Math.round((p.y / h) * 100)}%`)
-              .join(" / "),
-          );
-          setHullInfo(`外周点 ${hull.length}点 / 黒領域 ${bestArea}px`);
-        } else {
-          setFound(false);
-          setCorners("外周を探索中");
-          setHullInfo("外周点が不足");
-        }
+        setFound(true);
+        setCorners(
+          points
+            .map((p, i) => {
+              const names = ["左上", "右上", "右下", "左下"];
+              return `${names[i]} ${Math.round((p.x / w) * 100)}%,${Math.round((p.y / h) * 100)}%`;
+            })
+            .join(" / "),
+        );
       } else {
         setFound(false);
-        setCorners("マーカーを探索中");
-        setHullInfo("—");
+        setCorners("外周を探索中");
       }
+    } else {
+      setFound(false);
+      setCorners("マーカーを探索中");
     }
 
     frameRef.current = requestAnimationFrame(scan);
@@ -625,14 +675,9 @@ function ObliqueTestReceiver() {
     try {
       setError("");
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: { ideal: "environment" },
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-        },
+        video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: false,
       });
-
       if (!videoRef.current) return;
       videoRef.current.srcObject = stream;
       await videoRef.current.play();
@@ -647,15 +692,24 @@ function ObliqueTestReceiver() {
 
   return (
     <div className="optical-panel">
-      <div className="mode-label">斜めテスト 2</div>
-      <h2>外周から四隅を探す</h2>
-      <p className="hint">黒い領域全体の凸包を使って、内部模様ではなく外周から四隅を推定します。</p>
+      <div className="mode-label">透視補正テスト</div>
+      <h2>斜めを正面に戻す</h2>
+      <p className="hint">検出した四隅から、マーカーを正方形に補正します。まだ7×7認識は行いません。</p>
 
-      <div className="camera-wrap oblique-camera">
-        <video ref={videoRef} muted playsInline />
-        <canvas ref={canvasRef} className="camera-overlay" />
-        <div className="scan-hud">
-          <span>{found ? "OUTLINE FOUND" : "SEARCHING..."}</span>
+      <div className="warp-test-layout">
+        <div>
+          <div className="test-label">元映像</div>
+          <div className="camera-wrap oblique-camera">
+            <video ref={videoRef} muted playsInline />
+            <canvas ref={sourceCanvasRef} className="camera-overlay" />
+            <div className="scan-hud"><span>{found ? "CORNERS FOUND" : "SEARCHING..."}</span></div>
+          </div>
+        </div>
+        <div>
+          <div className="test-label">透視補正後</div>
+          <div className="warp-preview">
+            <canvas ref={warpCanvasRef} />
+          </div>
         </div>
       </div>
 
@@ -666,15 +720,13 @@ function ObliqueTestReceiver() {
       )}
 
       <div className={found ? "receive-result success" : "receive-result"}>
-        <span>{found ? "外周を推定" : "外周検出待ち"}</span>
-        <strong>{found ? "FOUND" : "—"}</strong>
+        <span>{found ? "四隅から透視補正" : "四隅検出待ち"}</span>
+        <strong>{found ? "WARPED" : "—"}</strong>
       </div>
 
       <div className="debug-panel">
-        <div className="debug-title">推定した四隅</div>
+        <div className="debug-title">検出した四隅</div>
         <div className="debug-info">{corners}</div>
-        <div className="debug-title">外周情報</div>
-        <div className="debug-info">{hullInfo}</div>
       </div>
 
       {error && <div className="error">{error}</div>}
