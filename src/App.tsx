@@ -26,6 +26,8 @@ function makeFrame(text: string): number[] {
 }
 
 function decodeFrame(frame: number[]): string | null {
+  if (frame.length !== GRID * GRID) return null;
+
   const bytes: number[] = [];
   for (let i = 0; i < 32; i++) {
     let byte = 0;
@@ -38,14 +40,18 @@ function decodeFrame(frame: number[]): string | null {
   if (bytes[0] !== MAGIC[0] || bytes[1] !== MAGIC[1]) return null;
 
   const length = bytes[2];
-  if (length < 0 || length > PAYLOAD_BYTES) return null;
+  if (length > PAYLOAD_BYTES) return null;
 
   let checksum = 0;
-  for (let i = 0; i < length; i++) checksum = (checksum + bytes[3 + i]) & 0xff;
+  for (let i = 0; i < length; i++) {
+    checksum = (checksum + bytes[3 + i]) & 0xff;
+  }
   if (checksum !== bytes[30]) return null;
 
   try {
-    return new TextDecoder().decode(new Uint8Array(bytes.slice(3, 3 + length)));
+    return new TextDecoder("utf-8", { fatal: true }).decode(
+      new Uint8Array(bytes.slice(3, 3 + length)),
+    );
   } catch {
     return null;
   }
@@ -94,6 +100,8 @@ function OpticalReceiver() {
   const [result, setResult] = useState("");
   const [status, setStatus] = useState("カメラ待機中");
   const [error, setError] = useState("");
+  const [debugBits, setDebugBits] = useState<number[]>(() => new Array(GRID * GRID).fill(0));
+  const [debugRange, setDebugRange] = useState("—");
 
   const stopCamera = () => {
     if (animationRef.current !== null) cancelAnimationFrame(animationRef.current);
@@ -112,42 +120,85 @@ function OpticalReceiver() {
   const scan = () => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    if (!video || !canvas || video.readyState < 2) {
+
+    if (!video || !canvas || video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
       animationRef.current = requestAnimationFrame(scan);
       return;
     }
 
-    // The sender pattern is placed inside the on-screen target frame.
-    // Sample the same centered square instead of the full camera crop.
-    const size = Math.min(video.videoWidth, video.videoHeight) * 0.70;
-    const sx = (video.videoWidth - size) / 2;
-    const sy = (video.videoHeight - size) / 2;
+    const displayWidth = video.clientWidth;
+    const displayHeight = video.clientHeight;
+    const sourceWidth = video.videoWidth;
+    const sourceHeight = video.videoHeight;
 
-    canvas.width = GRID * 8;
-    canvas.height = GRID * 8;
+    // Map the on-screen 70% target square back into the actual camera frame.
+    // This compensates for object-fit: cover cropping on iPad.
+    const scale = Math.max(displayWidth / sourceWidth, displayHeight / sourceHeight);
+    const visibleWidth = displayWidth / scale;
+    const visibleHeight = displayHeight / scale;
+    const cropX = (sourceWidth - visibleWidth) / 2;
+    const cropY = (sourceHeight - visibleHeight) / 2;
+
+    const targetDisplaySize = Math.min(displayWidth, displayHeight) * 0.70;
+    const targetX = (displayWidth - targetDisplaySize) / 2;
+    const targetY = (displayHeight - targetDisplaySize) / 2;
+
+    const sx = cropX + targetX / scale;
+    const sy = cropY + targetY / scale;
+    const size = targetDisplaySize / scale;
+
+    const sampleSize = GRID * 16;
+    canvas.width = sampleSize;
+    canvas.height = sampleSize;
+
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
 
     if (ctx) {
-      ctx.drawImage(video, sx, sy, size, size, 0, 0, canvas.width, canvas.height);
-      const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const bits: number[] = [];
+      ctx.drawImage(video, sx, sy, size, size, 0, 0, sampleSize, sampleSize);
+      const image = ctx.getImageData(0, 0, sampleSize, sampleSize);
+
+      const values: number[] = [];
+
+      // Sample the central 60% of each cell, avoiding cell edges.
+      const inset = 3;
+      const cellSize = sampleSize / GRID;
 
       for (let row = 0; row < GRID; row++) {
         for (let col = 0; col < GRID; col++) {
-          const x = col * 8 + 4;
-          const y = row * 8 + 4;
-          const index = (y * canvas.width + x) * 4;
-          const brightness = (image.data[index] + image.data[index + 1] + image.data[index + 2]) / 3;
-          bits.push(brightness > 128 ? 1 : 0);
+          let total = 0;
+          let count = 0;
+
+          const startX = Math.floor(col * cellSize + inset);
+          const endX = Math.ceil((col + 1) * cellSize - inset);
+          const startY = Math.floor(row * cellSize + inset);
+          const endY = Math.ceil((row + 1) * cellSize - inset);
+
+          for (let y = startY; y < endY; y++) {
+            for (let x = startX; x < endX; x++) {
+              const index = (y * sampleSize + x) * 4;
+              total += (image.data[index] + image.data[index + 1] + image.data[index + 2]) / 3;
+              count++;
+            }
+          }
+
+          values.push(count ? total / count : 128);
         }
       }
+
+      const min = Math.min(...values);
+      const max = Math.max(...values);
+      const threshold = min + (max - min) * 0.5;
+      const bits = values.map((value) => (value > threshold ? 1 : 0));
+
+      setDebugBits(bits);
+      setDebugRange(`${Math.round(min)} / ${Math.round(max)} / 閾値 ${Math.round(threshold)}`);
 
       const decoded = decodeFrame(bits);
       if (decoded !== null) {
         setResult(decoded);
         setStatus("受信成功");
       } else {
-        setStatus("読み取り中…");
+        setStatus(max - min < 35 ? "コントラスト不足" : "読み取り中…");
       }
     }
 
@@ -187,12 +238,12 @@ function OpticalReceiver() {
     <div className="optical-panel">
       <div className="mode-label">受信側</div>
       <h2>カメラで光通信パターンを読む</h2>
-      <p className="hint">中央の枠に送信側の模様を合わせてください。</p>
+      <p className="hint">白い枠の中いっぱいに送信側の模様を合わせてください。</p>
 
       <div className="camera-wrap">
         <video ref={videoRef} muted playsInline />
         <div className="target-frame" />
-        <div className="target-label">ここに模様を合わせる</div>
+        <div className="target-label">模様をこの枠いっぱいに</div>
       </div>
 
       <canvas ref={canvasRef} className="hidden-canvas" />
@@ -206,6 +257,16 @@ function OpticalReceiver() {
       <div className={result ? "receive-result success" : "receive-result"}>
         <span>{status}</span>
         <strong>{result || "—"}</strong>
+      </div>
+
+      <div className="debug-panel">
+        <div className="debug-title">読み取りデバッグ</div>
+        <div className="debug-grid" aria-label="カメラが読み取った16×16パターン">
+          {debugBits.map((bit, i) => (
+            <span key={i} className={bit ? "debug-cell on" : "debug-cell"} />
+          ))}
+        </div>
+        <div className="debug-info">{debugRange}</div>
       </div>
 
       {error && <div className="error">{error}</div>}
