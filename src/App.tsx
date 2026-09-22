@@ -1,307 +1,247 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { QRCodeSVG } from "qrcode.react";
-import { Html5Qrcode } from "html5-qrcode";
+import { useEffect, useRef, useState } from "react";
 
-type Role = "host" | "join";
-type SignalType = "offer" | "answer";
+const GRID = 16;
+const MAGIC = [0x4f, 0x50]; // "OP"
+const PAYLOAD_BYTES = 27;
 
-type SignalPayload = {
-  type: SignalType;
-  sdp: RTCSessionDescriptionInit;
-};
+function makeFrame(text: string): number[] {
+  const bytes = new TextEncoder().encode(text).slice(0, PAYLOAD_BYTES);
+  const frame = new Array(GRID * GRID).fill(0);
+  const packet: number[] = [...MAGIC, bytes.length, ...bytes];
 
-const ICE_SERVERS: RTCConfiguration = { iceServers: [] };
+  while (packet.length < 2 + 1 + PAYLOAD_BYTES) packet.push(0);
 
-function waitForIceGatheringComplete(pc: RTCPeerConnection): Promise<void> {
-  if (pc.iceGatheringState === "complete") return Promise.resolve();
+  let checksum = 0;
+  for (const byte of bytes) checksum = (checksum + byte) & 0xff;
+  packet.push(checksum);
 
-  return new Promise((resolve) => {
-    const check = () => {
-      if (pc.iceGatheringState === "complete") {
-        pc.removeEventListener("icegatheringstatechange", check);
-        resolve();
+  let bitIndex = 0;
+  for (const byte of packet) {
+    for (let bit = 7; bit >= 0; bit--) {
+      frame[bitIndex++] = (byte >> bit) & 1;
+    }
+  }
+
+  return frame;
+}
+
+function decodeFrame(frame: number[]): string | null {
+  const bytes: number[] = [];
+  for (let i = 0; i < 32; i++) {
+    let byte = 0;
+    for (let bit = 0; bit < 8; bit++) {
+      byte = (byte << 1) | frame[i * 8 + bit];
+    }
+    bytes.push(byte);
+  }
+
+  if (bytes[0] !== MAGIC[0] || bytes[1] !== MAGIC[1]) return null;
+
+  const length = bytes[2];
+  if (length < 0 || length > PAYLOAD_BYTES) return null;
+
+  let checksum = 0;
+  for (let i = 0; i < length; i++) checksum = (checksum + bytes[3 + i]) & 0xff;
+  if (checksum !== bytes[30]) return null;
+
+  try {
+    return new TextDecoder().decode(new Uint8Array(bytes.slice(3, 3 + length)));
+  } catch {
+    return null;
+  }
+}
+
+function OpticalSender() {
+  const [text, setText] = useState("HELLO");
+  const [frame, setFrame] = useState(() => makeFrame("HELLO"));
+
+  const update = () => setFrame(makeFrame(text));
+
+  return (
+    <div className="optical-panel">
+      <div className="mode-label">送信側</div>
+      <h2>画面を光通信パターンにする</h2>
+      <p className="hint">受信側のiPadカメラを、この模様に向けます。</p>
+
+      <div className="optical-frame" aria-label="光通信パターン">
+        {frame.map((bit, i) => (
+          <span key={i} className={bit ? "cell on" : "cell"} />
+        ))}
+      </div>
+
+      <div className="input-row">
+        <input
+          value={text}
+          maxLength={PAYLOAD_BYTES}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="送信する文字"
+        />
+        <button className="primary" onClick={update}>更新</button>
+      </div>
+
+      <div className="packet-info">
+        {new TextEncoder().encode(text).length} bytes / 最大 {PAYLOAD_BYTES} bytes
+      </div>
+    </div>
+  );
+}
+
+function OpticalReceiver() {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const animationRef = useRef<number | null>(null);
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState("");
+  const [status, setStatus] = useState("カメラ待機中");
+  const [error, setError] = useState("");
+
+  const stopCamera = () => {
+    if (animationRef.current !== null) cancelAnimationFrame(animationRef.current);
+    animationRef.current = null;
+
+    const video = videoRef.current;
+    if (video?.srcObject instanceof MediaStream) {
+      video.srcObject.getTracks().forEach((track) => track.stop());
+      video.srcObject = null;
+    }
+
+    setRunning(false);
+    setStatus("カメラ停止");
+  };
+
+  const scan = () => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas || video.readyState < 2) {
+      animationRef.current = requestAnimationFrame(scan);
+      return;
+    }
+
+    const size = Math.min(video.videoWidth, video.videoHeight);
+    const sx = (video.videoWidth - size) / 2;
+    const sy = (video.videoHeight - size) / 2;
+
+    canvas.width = GRID * 8;
+    canvas.height = GRID * 8;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+
+    if (ctx) {
+      ctx.drawImage(video, sx, sy, size, size, 0, 0, canvas.width, canvas.height);
+      const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const bits: number[] = [];
+
+      for (let row = 0; row < GRID; row++) {
+        for (let col = 0; col < GRID; col++) {
+          const x = col * 8 + 4;
+          const y = row * 8 + 4;
+          const index = (y * canvas.width + x) * 4;
+          const brightness = (image.data[index] + image.data[index + 1] + image.data[index + 2]) / 3;
+          bits.push(brightness > 128 ? 1 : 0);
+        }
       }
-    };
-    pc.addEventListener("icegatheringstatechange", check);
-    window.setTimeout(() => {
-      pc.removeEventListener("icegatheringstatechange", check);
-      resolve();
-    }, 8000);
-  });
-}
 
-async function encodeSignal(payload: SignalPayload) {
-  const json = JSON.stringify(payload);
-  const bytes = new TextEncoder().encode(json);
-  const compressed = await new Response(
-    new Blob([bytes]).stream().pipeThrough(new CompressionStream("deflate-raw"))
-  ).arrayBuffer();
+      const decoded = decodeFrame(bits);
+      if (decoded !== null) {
+        setResult(decoded);
+        setStatus("受信成功");
+      } else {
+        setStatus("読み取り中…");
+      }
+    }
 
-  const binary = String.fromCharCode(...new Uint8Array(compressed));
-  return btoa(binary);
-}
+    animationRef.current = requestAnimationFrame(scan);
+  };
 
-async function decodeSignal(value: string): Promise<SignalPayload> {
-  const binary = atob(value);
-  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
-  const decompressed = await new Response(
-    new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate-raw"))
-  ).arrayBuffer();
+  const startCamera = async () => {
+    try {
+      setError("");
+      setResult("");
+      setStatus("カメラ起動中…");
 
-  return JSON.parse(new TextDecoder().decode(decompressed)) as SignalPayload;
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: "environment" },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
+        audio: false,
+      });
+
+      if (!videoRef.current) return;
+      videoRef.current.srcObject = stream;
+      await videoRef.current.play();
+
+      setRunning(true);
+      animationRef.current = requestAnimationFrame(scan);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "カメラを起動できませんでした。");
+      setStatus("カメラ起動失敗");
+    }
+  };
+
+  useEffect(() => () => stopCamera(), []);
+
+  return (
+    <div className="optical-panel">
+      <div className="mode-label">受信側</div>
+      <h2>カメラで光通信パターンを読む</h2>
+      <p className="hint">中央の枠に送信側の模様を合わせてください。</p>
+
+      <div className="camera-wrap">
+        <video ref={videoRef} muted playsInline />
+        <div className="target-frame" />
+        <div className="target-label">ここに模様を合わせる</div>
+      </div>
+
+      <canvas ref={canvasRef} className="hidden-canvas" />
+
+      {!running ? (
+        <button className="primary" onClick={startCamera}>カメラを起動</button>
+      ) : (
+        <button className="secondary" onClick={stopCamera}>カメラを停止</button>
+      )}
+
+      <div className={result ? "receive-result success" : "receive-result"}>
+        <span>{status}</span>
+        <strong>{result || "—"}</strong>
+      </div>
+
+      {error && <div className="error">{error}</div>}
+    </div>
+  );
 }
 
 function App() {
-  const [role, setRole] = useState<Role | null>(null);
-  const [signal, setSignal] = useState<string>("");
-  const [connected, setConnected] = useState(false);
-  const [message, setMessage] = useState("");
-  const [received, setReceived] = useState<string[]>([]);
-  const [status, setStatus] = useState("待機中");
-  const [scannerOpen, setScannerOpen] = useState(false);
-  const [error, setError] = useState("");
-
-  const pcRef = useRef<RTCPeerConnection | null>(null);
-  const channelRef = useRef<RTCDataChannel | null>(null);
-  const scannerRef = useRef<Html5Qrcode | null>(null);
-
-  const cleanup = useCallback(() => {
-    scannerRef.current?.stop().catch(() => {});
-    scannerRef.current = null;
-    channelRef.current?.close();
-    channelRef.current = null;
-    pcRef.current?.close();
-    pcRef.current = null;
-  }, []);
-
-  useEffect(() => cleanup, [cleanup]);
-
-  const setupChannel = useCallback((channel: RTCDataChannel) => {
-    channelRef.current = channel;
-    channel.onopen = () => {
-      setConnected(true);
-      setStatus("接続済み");
-      setError("");
-    };
-    channel.onclose = () => {
-      setConnected(false);
-      setStatus("切断");
-    };
-    channel.onerror = () => setError("DataChannelでエラーが発生しました。");
-    channel.onmessage = (event) => {
-      setReceived((prev) => [...prev, String(event.data)]);
-    };
-  }, []);
-
-  const createPeer = useCallback(() => {
-    cleanup();
-    const pc = new RTCPeerConnection(ICE_SERVERS);
-    pcRef.current = pc;
-    pc.onconnectionstatechange = () => {
-      const state = pc.connectionState;
-      if (state === "failed") {
-        setStatus("接続失敗");
-        setError("WebRTCの接続に失敗しました。");
-      } else if (state === "disconnected") {
-        setStatus("切断");
-      }
-    };
-    return pc;
-  }, [cleanup]);
-
-  const createOffer = async () => {
-    try {
-      setError("");
-      setStatus("Offer作成中...");
-      const pc = createPeer();
-      const channel = pc.createDataChannel("test");
-      setupChannel(channel);
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      await waitForIceGatheringComplete(pc);
-      const local = pc.localDescription;
-      if (!local) throw new Error("Offerを取得できませんでした。");
-      const encoded = await encodeSignal({ type: "offer", sdp: local });
-      setSignal(encoded);
-      setStatus("Offer準備完了。Bで読み取ってください。");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Offer作成に失敗しました。");
-      setStatus("エラー");
-    }
-  };
-
-  const acceptOfferAndCreateAnswer = async (encodedOffer: string) => {
-    try {
-      setError("");
-      setStatus("Answer作成中...");
-      const offer = await decodeSignal(encodedOffer);
-      if (offer.type !== "offer") throw new Error("Offerではありません。");
-      const pc = createPeer();
-      pc.ondatachannel = (event) => setupChannel(event.channel);
-      await pc.setRemoteDescription(offer.sdp);
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      await waitForIceGatheringComplete(pc);
-      const local = pc.localDescription;
-      if (!local) throw new Error("Answerを取得できませんでした。");
-      const encoded = await encodeSignal({ type: "answer", sdp: local });
-      setSignal(encoded);
-      setStatus("Answer準備完了。Aで読み取ってください。");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Answer作成に失敗しました。");
-      setStatus("エラー");
-    }
-  };
-
-  const acceptAnswer = async (encodedAnswer: string) => {
-    try {
-      setError("");
-      setStatus("Answer適用中...");
-      const answer = await decodeSignal(encodedAnswer);
-      if (answer.type !== "answer") throw new Error("Answerではありません。");
-      const pc = pcRef.current;
-      if (!pc) throw new Error("先にOfferを作成してください。");
-      await pc.setRemoteDescription(answer.sdp);
-      setStatus("接続待機中...");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Answerの適用に失敗しました。");
-      setStatus("エラー");
-    }
-  };
-
-  const startScanner = async () => {
-    try {
-      setError("");
-      setScannerOpen(true);
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      const scanner = new Html5Qrcode("qr-reader");
-      scannerRef.current = scanner;
-      await scanner.start(
-        { facingMode: "environment" },
-        {
-          fps: 20,
-          qrbox: { width: 360, height: 360 },
-        },
-        async (decodedText) => {
-          await scanner.stop().catch(() => {});
-          scannerRef.current = null;
-          setScannerOpen(false);
-          if (role === "join") {
-            await acceptOfferAndCreateAnswer(decodedText);
-          } else {
-            await acceptAnswer(decodedText);
-          }
-        },
-        () => {},
-      );
-    } catch (e) {
-      setScannerOpen(false);
-      setError(e instanceof Error ? e.message : "カメラを起動できませんでした。");
-    }
-  };
-
-  const sendMessage = () => {
-    const channel = channelRef.current;
-    if (!channel || channel.readyState !== "open" || !message.trim()) return;
-    channel.send(message);
-    setReceived((prev) => [...prev, `自分: ${message}`]);
-    setMessage("");
-  };
-
-  const reset = () => {
-    cleanup();
-    setSignal("");
-    setConnected(false);
-    setReceived([]);
-    setStatus("待機中");
-    setError("");
-    setRole(null);
-  };
+  const [mode, setMode] = useState<"select" | "send" | "receive">("select");
 
   return (
     <main className="app">
       <section className="card">
-        <div className="eyebrow">WEBRTC / OFFLINE TEST</div>
-        <h1>端末間通信テスト</h1>
-        <p className="sub">まずは2台の端末を直接つなぐ実験です。</p>
+        <div className="eyebrow">OPTICAL COMMUNICATION TEST</div>
+        <h1>光通信テスト</h1>
+        <p className="sub">まずはiPadの画面とカメラだけで、短いデータを送れるか試します。</p>
 
-        {!role ? (
+        {mode === "select" && (
           <div className="role-grid">
-            <button className="role-button" onClick={() => setRole("host")}>
-              <span>A</span>
-              <strong>Host</strong>
-              <small>Offerを作成する端末</small>
+            <button className="role-button" onClick={() => setMode("send")}>
+              <span>送信</span>
+              <strong>画面を表示</strong>
+              <small>光通信パターンを表示する</small>
             </button>
-            <button className="role-button" onClick={() => setRole("join")}>
-              <span>B</span>
-              <strong>Join</strong>
-              <small>Offerを読み取る端末</small>
+            <button className="role-button" onClick={() => setMode("receive")}>
+              <span>受信</span>
+              <strong>カメラで読む</strong>
+              <small>相手の画面を読み取る</small>
             </button>
           </div>
-        ) : (
+        )}
+
+        {mode !== "select" && (
           <>
-            <div className="topbar">
-              <span>{role === "host" ? "A / Host" : "B / Join"}</span>
-              <span className={connected ? "online" : "waiting"}>{status}</span>
-            </div>
-
-            {role === "host" && !signal && (
-              <button className="primary" onClick={createOffer}>① Offerを作成</button>
-            )}
-
-            {signal && (
-              <div className="signal-card">
-                <h2>{signal.startsWith("ey") ? (role === "host" ? "AのOffer" : "BのAnswer") : "接続情報"}</h2>
-                <p>もう一方の端末でこのQRを読み取ります。</p>
-                <div className="qr">
-                  <QRCodeSVG value={signal} size={360} level="L" includeMargin />
-                </div>
-                <div className="signal-size">{signal.length.toLocaleString()} characters · compressed signaling</div>
-              </div>
-            )}
-
-            {role === "join" && !signal && (
-              <button className="primary" onClick={startScanner}>① AのOfferを読み取る</button>
-            )}
-
-            {role === "host" && signal && !connected && (
-              <button className="secondary" onClick={startScanner}>② BのAnswerを読み取る</button>
-            )}
-
-            {role === "join" && signal && !connected && (
-              <button className="secondary" onClick={startScanner}>② AのOfferをもう一度読み取る</button>
-            )}
-
-            {connected && (
-              <div className="chat">
-                <h2>DataChannel通信</h2>
-                <div className="messages">
-                  {received.length === 0 ? <span className="muted">まだメッセージはありません。</span> : received.map((item, i) => <div key={i}>{item}</div>)}
-                </div>
-                <div className="send-row">
-                  <input value={message} onChange={(e) => setMessage(e.target.value)} placeholder="メッセージ" onKeyDown={(e) => e.key === "Enter" && sendMessage()} />
-                  <button onClick={sendMessage}>送信</button>
-                </div>
-              </div>
-            )}
-
-            <button className="reset" onClick={reset}>最初からやり直す</button>
+            {mode === "send" ? <OpticalSender /> : <OpticalReceiver />}
+            <button className="reset" onClick={() => setMode("select")}>最初に戻る</button>
           </>
         )}
-
-        {scannerOpen && (
-          <div className="scanner-overlay">
-            <div className="scanner-panel">
-              <div className="scanner-head">
-                <strong>QRを読み取る</strong>
-                <button onClick={() => { scannerRef.current?.stop().catch(() => {}); scannerRef.current = null; setScannerOpen(false); }}>閉じる</button>
-              </div>
-              <div id="qr-reader" />
-            </div>
-          </div>
-        )}
-
-        {error && <div className="error">{error}</div>}
       </section>
     </main>
   );
