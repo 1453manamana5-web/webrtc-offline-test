@@ -189,24 +189,8 @@ function Receiver() {
 
         const ratio = bw / bh;
         const fill = area / (bw * bh);
-        if (ratio < 0.72 || ratio > 1.28 || fill < 0.45) continue;
-
-        const sample: number[] = [];
-        for (let row = 0; row < 7; row++) {
-          for (let col = 0; col < 7; col++) {
-            const px = Math.floor(minX + ((col + 0.5) / 7) * bw);
-            const py = Math.floor(minY + ((row + 0.5) / 7) * bh);
-            sample.push(gray[py * w + px] < threshold ? 1 : 0);
-          }
-        }
-
-        let matches = 0;
-        for (let i = 0; i < INNER.length; i++) {
-          if (sample[i] === INNER[i]) matches++;
-        }
-
-        const shapeScore = matches / INNER.length;
-        if (shapeScore < 0.82) continue;
+        // 斜めから見たときは正方形が台形・長方形に近く見えるので、少し許容する。
+        if (ratio < 0.45 || ratio > 2.2 || fill < 0.30) continue;
 
         const cx = (minX + maxX + 1) / 2;
         const cy = (minY + maxY + 1) / 2;
@@ -244,6 +228,36 @@ function Receiver() {
           angle = Math.atan2(dotY - cy, dotX - cx) * 180 / Math.PI;
           if (angle < 0) angle += 360;
         }
+
+        // 右下の目印は「マーカーの右下方向」にある。
+        // その方向からマーカー自身の回転角を求め、回転した状態で7×7を再サンプリングする。
+        const markerRotation = dotScore > 0 ? angle - 45 : 0;
+        const radians = markerRotation * Math.PI / 180;
+        const axisX = { x: Math.cos(radians), y: Math.sin(radians) };
+        const axisY = { x: -Math.sin(radians), y: Math.cos(radians) };
+        const halfW = bw / 2;
+        const halfH = bh / 2;
+        const sample: number[] = [];
+
+        for (let row = 0; row < 7; row++) {
+          for (let col = 0; col < 7; col++) {
+            const localX = ((col + 0.5) / 7 - 0.5) * bw;
+            const localY = ((row + 0.5) / 7 - 0.5) * bh;
+            const px = Math.round(cx + axisX.x * localX + axisY.x * localY);
+            const py = Math.round(cy + axisX.y * localX + axisY.y * localY);
+            const clampedX = Math.max(0, Math.min(w - 1, px));
+            const clampedY = Math.max(0, Math.min(h - 1, py));
+            sample.push(gray[clampedY * w + clampedX] < threshold ? 1 : 0);
+          }
+        }
+
+        let matches = 0;
+        for (let i = 0; i < INNER.length; i++) {
+          if (sample[i] === INNER[i]) matches++;
+        }
+
+        const shapeScore = matches / INNER.length;
+        if (shapeScore < 0.70) continue;
 
         const score = shapeScore * 0.85 + dotScore * 0.15;
         if (score > bestScore) {
@@ -364,7 +378,7 @@ function Receiver() {
     <div className="optical-panel">
       <div className="mode-label">受信側</div>
       <h2>向きを探す</h2>
-      <p className="hint">マーカーを回すと、右下の目印の方向から角度を推定します。</p>
+      <p className="hint">正面だけでなく、マーカーを回した状態や斜め方向からの見え方にも対応できるかテストします。</p>
 
       <div className={`camera-wrap ${found ? "marker-found" : ""}`}>
         <video ref={videoRef} muted playsInline />
