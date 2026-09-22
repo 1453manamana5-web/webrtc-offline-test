@@ -438,45 +438,131 @@ function findOcclusionTolerantBox(
   h: number,
   marker: number[][],
 ) {
-  let best: { score: number; x: number; y: number; size: number; visibleDark: number } | null = null;
+  let best: {
+    score: number;
+    x: number;
+    y: number;
+    size: number;
+    visibleDark: number;
+  } | null = null;
 
-  // Fallback detector: instead of requiring one connected black region,
-  // search for the marker's 7x7 structure while allowing several cells
-  // to be hidden by a finger.
+  // Search for the full 7x7 structure, while treating cells covered by a
+  // finger as unknown rather than simply "wrong". In particular, require
+  // evidence from the outer ring so the central 3x3 black block alone can
+  // never become a valid marker.
+  const outerCells: { row: number; col: number }[] = [];
+  const innerCells: { row: number; col: number }[] = [];
+
+  for (let row = 0; row < 7; row++) {
+    for (let col = 0; col < 7; col++) {
+      if (row === 0 || row === 6 || col === 0 || col === 6) {
+        outerCells.push({ row, col });
+      } else {
+        innerCells.push({ row, col });
+      }
+    }
+  }
+
   for (let size = 20; size <= 72; size += 4) {
     for (let y = 0; y <= h - size; y += 3) {
       for (let x = 0; x <= w - size; x += 3) {
         let matches = 0;
+        let knownCells = 0;
         let expectedDark = 0;
         let visibleDark = 0;
+        let outerMatches = 0;
+        let outerKnown = 0;
+        let outerDark = 0;
 
         for (let row = 0; row < 7; row++) {
           for (let col = 0; col < 7; col++) {
-            const px = Math.min(w - 1, Math.floor(x + ((col + 0.5) / 7) * size));
-            const py = Math.min(h - 1, Math.floor(y + ((row + 0.5) / 7) * size));
+            const px = Math.min(
+              w - 1,
+              Math.floor(x + ((col + 0.5) / 7) * size),
+            );
+            const py = Math.min(
+              h - 1,
+              Math.floor(y + ((row + 0.5) / 7) * size),
+            );
             const observed = dark[py * w + px];
+            const expected = marker[row][col];
+            const isOuter = row === 0 || row === 6 || col === 0 || col === 6;
 
-            if (marker[row][col] === 1) {
+            if (expected === 1) {
               expectedDark++;
               if (observed) {
                 matches++;
+                knownCells++;
                 visibleDark++;
+                if (isOuter) outerDark++;
               }
             } else if (!observed) {
               matches++;
+              knownCells++;
+            }
+
+            if (isOuter) {
+              // A visible black outer cell is especially strong evidence
+              // that this is the actual marker rather than the center block.
+              if (observed === Boolean(expected)) outerMatches++;
+              outerKnown++;
             }
           }
         }
 
-        // A finger may hide some cells. Require enough of the black
-        // structure to remain visible, but do not require every cell.
         const score = matches / 49;
         const darkVisibility = visibleDark / expectedDark;
+        const outerScore = outerMatches / outerKnown;
 
-        if (darkVisibility < 0.45 || score < 0.68) continue;
+        // Require the outer structure to be substantially visible.
+        // This rejects the central black 3x3 block when the border is hidden.
+        if (outerDark < 8) continue;
+        if (outerScore < 0.55) continue;
+        if (darkVisibility < 0.45) continue;
+        if (knownCells < 30) continue;
+        if (score < 0.72) continue;
 
-        if (!best || score > best.score) {
-          best = { score, x, y, size, visibleDark };
+        // Require at least one visible black corner-region cell and one
+        // visible black cell away from the center. This prevents a compact
+        // central region from masquerading as the whole marker.
+        let cornerEvidence = 0;
+        let outerMidEvidence = 0;
+
+        for (const cell of outerCells) {
+          const px = Math.min(
+            w - 1,
+            Math.floor(x + ((cell.col + 0.5) / 7) * size),
+          );
+          const py = Math.min(
+            h - 1,
+            Math.floor(y + ((cell.row + 0.5) / 7) * size),
+          );
+          if (dark[py * w + px] && marker[cell.row][cell.col] === 1) {
+            if (
+              (cell.row <= 1 || cell.row >= 5) &&
+              (cell.col <= 1 || cell.col >= 5)
+            ) {
+              cornerEvidence++;
+            } else {
+              outerMidEvidence++;
+            }
+          }
+        }
+
+        if (cornerEvidence < 2 || outerMidEvidence < 4) continue;
+
+        if (
+          !best ||
+          score > best.score ||
+          (score === best.score && outerScore > best.score)
+        ) {
+          best = {
+            score,
+            x,
+            y,
+            size,
+            visibleDark,
+          };
         }
       }
     }
