@@ -400,8 +400,232 @@ function Receiver() {
   );
 }
 
+
+function ObliqueTestReceiver() {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const frameRef = useRef<number | null>(null);
+  const [running, setRunning] = useState(false);
+  const [found, setFound] = useState(false);
+  const [corners, setCorners] = useState("—");
+  const [error, setError] = useState("");
+
+  const stop = () => {
+    if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+    frameRef.current = null;
+    const video = videoRef.current;
+    if (video?.srcObject instanceof MediaStream) {
+      video.srcObject.getTracks().forEach((track) => track.stop());
+      video.srcObject = null;
+    }
+    setRunning(false);
+    setFound(false);
+    setCorners("—");
+  };
+
+  const scan = () => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas || video.readyState < 2 || !video.videoWidth) {
+      frameRef.current = requestAnimationFrame(scan);
+      return;
+    }
+
+    const size = 320;
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+
+    if (ctx) {
+      const sourceSize = Math.min(video.videoWidth, video.videoHeight);
+      const sx = (video.videoWidth - sourceSize) / 2;
+      const sy = (video.videoHeight - sourceSize) / 2;
+      ctx.drawImage(video, sx, sy, sourceSize, sourceSize, 0, 0, size, size);
+
+      const image = ctx.getImageData(0, 0, size, size);
+      const data = image.data;
+      const block = 4;
+      const w = size / block;
+      const h = size / block;
+      const gray = new Uint8Array(w * h);
+
+      for (let by = 0; by < h; by++) {
+        for (let bx = 0; bx < w; bx++) {
+          let total = 0;
+          for (let y = 0; y < block; y++) {
+            for (let x = 0; x < block; x++) {
+              const p = ((by * block + y) * size + bx * block + x) * 4;
+              total += (data[p] + data[p + 1] + data[p + 2]) / 3;
+            }
+          }
+          gray[by * w + bx] = total / (block * block);
+        }
+      }
+
+      const min = Math.min(...Array.from(gray));
+      const max = Math.max(...Array.from(gray));
+      const threshold = min + (max - min) * 0.45;
+      const dark = new Uint8Array(w * h);
+      for (let i = 0; i < gray.length; i++) {
+        dark[i] = gray[i] < threshold ? 1 : 0;
+      }
+
+      const seen = new Uint8Array(w * h);
+      let bestArea = 0;
+      let bestPoints: { x: number; y: number }[] = [];
+
+      for (let start = 0; start < dark.length; start++) {
+        if (!dark[start] || seen[start]) continue;
+
+        const queue = [start];
+        seen[start] = 1;
+        let head = 0;
+        const points: { x: number; y: number }[] = [];
+
+        while (head < queue.length) {
+          const p = queue[head++];
+          const x = p % w;
+          const y = Math.floor(p / w);
+          points.push({ x, y });
+
+          for (const n of [p - 1, p + 1, p - w, p + w]) {
+            if (n < 0 || n >= dark.length || seen[n] || !dark[n]) continue;
+            const nx = n % w;
+            const ny = Math.floor(n / w);
+            if (Math.abs(nx - x) + Math.abs(ny - y) !== 1) continue;
+            seen[n] = 1;
+            queue.push(n);
+          }
+        }
+
+        if (points.length < 80 || points.length <= bestArea) continue;
+
+        const minX = Math.min(...points.map((p) => p.x));
+        const maxX = Math.max(...points.map((p) => p.x));
+        const minY = Math.min(...points.map((p) => p.y));
+        const maxY = Math.max(...points.map((p) => p.y));
+        const bw = maxX - minX + 1;
+        const bh = maxY - minY + 1;
+
+        if (bw < 12 || bh < 12 || bw > 75 || bh > 75) continue;
+
+        bestArea = points.length;
+        bestPoints = points;
+      }
+
+      ctx.clearRect(0, 0, size, size);
+
+      if (bestPoints.length > 0) {
+        const tl = bestPoints.reduce((a, b) => (a.x + a.y < b.x + b.y ? a : b));
+        const br = bestPoints.reduce((a, b) => (a.x + a.y > b.x + b.y ? a : b));
+        const tr = bestPoints.reduce((a, b) => (a.x - a.y > b.x - b.y ? a : b));
+        const bl = bestPoints.reduce((a, b) => (a.x - a.y < b.x - b.y ? a : b));
+
+        const points = [tl, tr, br, bl];
+
+        ctx.strokeStyle = "#55c98a";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        points.forEach((p, i) => {
+          const x = (p.x + 0.5) * block;
+          const y = (p.y + 0.5) * block;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.closePath();
+        ctx.stroke();
+
+        ctx.fillStyle = "#55c98a";
+        points.forEach((p) => {
+          ctx.beginPath();
+          ctx.arc((p.x + 0.5) * block, (p.y + 0.5) * block, 5, 0, Math.PI * 2);
+          ctx.fill();
+        });
+
+        const names = ["左上", "右上", "右下", "左下"];
+        ctx.fillStyle = "#fff";
+        ctx.font = "bold 12px system-ui";
+        points.forEach((p, i) => {
+          ctx.fillText(names[i], (p.x + 0.5) * block + 7, (p.y + 0.5) * block - 7);
+        });
+
+        setFound(true);
+        setCorners(
+          points
+            .map((p, i) => `${names[i]} ${Math.round((p.x / w) * 100)}%,${Math.round((p.y / h) * 100)}%`)
+            .join(" / "),
+        );
+      } else {
+        ctx.clearRect(0, 0, size, size);
+        setFound(false);
+        setCorners("四隅を探索中");
+      }
+    }
+
+    frameRef.current = requestAnimationFrame(scan);
+  };
+
+  const start = async () => {
+    try {
+      setError("");
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: "environment" },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
+        audio: false,
+      });
+
+      if (!videoRef.current) return;
+      videoRef.current.srcObject = stream;
+      await videoRef.current.play();
+      setRunning(true);
+      frameRef.current = requestAnimationFrame(scan);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "カメラを起動できませんでした。");
+    }
+  };
+
+  useEffect(() => () => stop(), []);
+
+  return (
+    <div className="optical-panel">
+      <div className="mode-label">斜めテスト</div>
+      <h2>四隅を探す</h2>
+      <p className="hint">7×7認識はまだ行わず、マーカーらしい黒領域の四隅だけを推定します。</p>
+
+      <div className="camera-wrap">
+        <video ref={videoRef} muted playsInline />
+        <canvas ref={canvasRef} className="camera-overlay" />
+        <div className="scan-hud">
+          <span>{found ? "CORNERS FOUND" : "SEARCHING..."}</span>
+        </div>
+      </div>
+
+      {!running ? (
+        <button className="primary" onClick={start}>カメラを起動</button>
+      ) : (
+        <button className="secondary" onClick={stop}>カメラを停止</button>
+      )}
+
+      <div className={found ? "receive-result success" : "receive-result"}>
+        <span>{found ? "四隅を推定" : "四隅検出待ち"}</span>
+        <strong>{found ? "FOUND" : "—"}</strong>
+      </div>
+
+      <div className="debug-panel">
+        <div className="debug-title">推定した四隅</div>
+        <div className="debug-info">{corners}</div>
+      </div>
+
+      {error && <div className="error">{error}</div>}
+    </div>
+  );
+}
+
 function App() {
-  const [mode, setMode] = useState<"select" | "send" | "receive">("select");
+  const [mode, setMode] = useState<"select" | "send" | "receive" | "oblique">("select");
 
   return (
     <main className="app">
@@ -425,9 +649,29 @@ function App() {
           </div>
         )}
 
+        {mode === "select" && (
+          <div className="role-grid">
+            <button className="role-button" onClick={() => setMode("send")}>
+              <span>送信側</span>
+              <strong>模様を表示</strong>
+              <small>向き検出用マーカー</small>
+            </button>
+            <button className="role-button" onClick={() => setMode("receive")}>
+              <span>受信側</span>
+              <strong>カメラで探す</strong>
+              <small>位置・大きさ・向きを取得</small>
+            </button>
+            <button className="role-button" onClick={() => setMode("oblique")}>
+              <span>斜めテスト</span>
+              <strong>四隅を探す</strong>
+              <small>7×7認識なしの基礎テスト</small>
+            </button>
+          </div>
+        )}
+
         {mode !== "select" && (
           <>
-            {mode === "send" ? <Sender /> : <Receiver />}
+            {mode === "send" ? <Sender /> : mode === "receive" ? <Receiver /> : <ObliqueTestReceiver />}
             <button className="reset" onClick={() => setMode("select")}>最初に戻る</button>
           </>
         )}
