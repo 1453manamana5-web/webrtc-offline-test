@@ -743,68 +743,70 @@ function ObliqueTestReceiver() {
       bestPoints = points;
     }
 
-    // If the finger broke the black border into separate pieces, the
-    // connected-component detector can lose the marker entirely.
-    // Fall back to a tolerant 7x7 template search.
-    if (bestPoints.length === 0) {
-      const fallback = findOcclusionTolerantBox(dark, w, h, MARKER);
-
-      if (fallback) {
-        const x = fallback.x;
-        const y = fallback.y;
-        const size = fallback.size;
-
-        bestPoints = [
-          { x: Math.floor(x / block), y: Math.floor(y / block) },
-          { x: Math.floor((x + size) / block), y: Math.floor(y / block) },
-          { x: Math.floor((x + size) / block), y: Math.floor((y + size) / block) },
-          { x: Math.floor(x / block), y: Math.floor((y + size) / block) },
-        ];
-        bestArea = fallback.visibleDark;
-      }
-    }
+    // Primary connected-component detection gives accurate corners when
+    // the marker is fully visible. If a finger hides a corner, fall back
+    // to the tolerant template detector and reconstruct the hidden corners
+    // from the estimated full marker square.
+    let estimatedPoints: { x: number; y: number }[] | null = null;
 
     if (bestPoints.length > 0) {
       const hull = convexHull(bestPoints);
-
       if (hull.length >= 4) {
         const tl = hull.reduce((a, b) => (a.x + a.y < b.x + b.y ? a : b));
         const br = hull.reduce((a, b) => (a.x + a.y > b.x + b.y ? a : b));
         const tr = hull.reduce((a, b) => (a.x - a.y > b.x - b.y ? a : b));
         const bl = hull.reduce((a, b) => (a.x - a.y < b.x - b.y ? a : b));
-        const points = [tl, tr, br, bl];
-
-        ctx.strokeStyle = "#55c98a";
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        points.forEach((p, i) => {
-          const px = (p.x + 0.5) * block;
-          const py = (p.y + 0.5) * block;
-          if (i === 0) ctx.moveTo(px, py);
-          else ctx.lineTo(px, py);
-        });
-        ctx.closePath();
-        ctx.stroke();
-
-        warpPerspective(ctx, warpCtx, sourceCanvas, points.map((p) => ({
-          x: (p.x + 0.5) * block,
-          y: (p.y + 0.5) * block,
-        })), 320);
-
-        recognizeWarpedMarker(warpCtx);
-        setFound(true);
-        setCorners(
-          points
-            .map((p, i) => {
-              const names = ["左上", "右上", "右下", "左下"];
-              return `${names[i]} ${Math.round((p.x / w) * 100)}%,${Math.round((p.y / h) * 100)}%`;
-            })
-            .join(" / "),
-        );
-      } else {
-        setFound(false);
-        setCorners("外周を探索中");
+        estimatedPoints = [tl, tr, br, bl];
       }
+    }
+
+    if (!estimatedPoints) {
+      const fallback = findOcclusionTolerantBox(dark, w, h, MARKER);
+
+      if (fallback) {
+        // The fallback gives us the estimated full marker rectangle, not
+        // just the visible black pixels. Those four corners remain valid
+        // even when one or more physical corners are hidden.
+        estimatedPoints = [
+          { x: fallback.x / block, y: fallback.y / block },
+          { x: (fallback.x + fallback.size) / block, y: fallback.y / block },
+          { x: (fallback.x + fallback.size) / block, y: (fallback.y + fallback.size) / block },
+          { x: fallback.x / block, y: (fallback.y + fallback.size) / block },
+        ];
+        bestArea = fallback.visibleDark;
+      }
+    }
+
+    if (estimatedPoints) {
+      const points = estimatedPoints;
+
+      ctx.strokeStyle = "#55c98a";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      points.forEach((p, i) => {
+        const px = (p.x + 0.5) * block;
+        const py = (p.y + 0.5) * block;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      });
+      ctx.closePath();
+      ctx.stroke();
+
+      warpPerspective(ctx, warpCtx, sourceCanvas, points.map((p) => ({
+        x: (p.x + 0.5) * block,
+        y: (p.y + 0.5) * block,
+      })), 320);
+
+      recognizeWarpedMarker(warpCtx);
+      setFound(true);
+      setCorners(
+        points
+          .map((p, i) => {
+            const names = ["左上", "右上", "右下", "左下"];
+            return `${names[i]} ${Math.round((p.x / w) * 100)}%,${Math.round((p.y / h) * 100)}%`;
+          })
+          .join(" / "),
+      );
     } else {
       setFound(false);
       setCorners("マーカーを探索中");
