@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 
-const GRID = 16;
-const MAGIC = [0x4f, 0x50]; // "OP"
-const PAYLOAD_BYTES = 27;
+const GRID = 12;
+const MAGIC = [0xa5, 0x5a];
+const PAYLOAD_BYTES = 14;
+const PACKET_BYTES = 18;
 
 function makeFrame(text: string): number[] {
   const bytes = new TextEncoder().encode(text).slice(0, PAYLOAD_BYTES);
@@ -29,7 +30,7 @@ function decodeFrame(frame: number[]): string | null {
   if (frame.length !== GRID * GRID) return null;
 
   const bytes: number[] = [];
-  for (let i = 0; i < 32; i++) {
+  for (let i = 0; i < PACKET_BYTES; i++) {
     let byte = 0;
     for (let bit = 0; bit < 8; bit++) {
       byte = (byte << 1) | frame[i * 8 + bit];
@@ -46,7 +47,7 @@ function decodeFrame(frame: number[]): string | null {
   for (let i = 0; i < length; i++) {
     checksum = (checksum + bytes[3 + i]) & 0xff;
   }
-  if (checksum !== bytes[30]) return null;
+  if (checksum !== bytes[17]) return null;
 
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(
@@ -139,7 +140,7 @@ function OpticalReceiver() {
     const cropX = (sourceWidth - visibleWidth) / 2;
     const cropY = (sourceHeight - visibleHeight) / 2;
 
-    const targetDisplaySize = Math.min(displayWidth, displayHeight) * 0.70;
+    const targetDisplaySize = Math.min(displayWidth, displayHeight) * 0.80;
     const targetX = (displayWidth - targetDisplaySize) / 2;
     const targetY = (displayHeight - targetDisplaySize) / 2;
 
@@ -147,7 +148,7 @@ function OpticalReceiver() {
     const sy = cropY + targetY / scale;
     const size = targetDisplaySize / scale;
 
-    const sampleSize = GRID * 16;
+    const sampleSize = GRID * 24;
     canvas.width = sampleSize;
     canvas.height = sampleSize;
 
@@ -160,7 +161,7 @@ function OpticalReceiver() {
       const values: number[] = [];
 
       // Sample the central 60% of each cell, avoiding cell edges.
-      const inset = 3;
+      const inset = 7;
       const cellSize = sampleSize / GRID;
 
       for (let row = 0; row < GRID; row++) {
@@ -261,7 +262,7 @@ function OpticalReceiver() {
 
       <div className="debug-panel">
         <div className="debug-title">読み取りデバッグ</div>
-        <div className="debug-grid" aria-label="カメラが読み取った16×16パターン">
+        <div className="debug-grid" aria-label="カメラが読み取った12×12パターン">
           {debugBits.map((bit, i) => (
             <span key={i} className={bit ? "debug-cell on" : "debug-cell"} />
           ))}
