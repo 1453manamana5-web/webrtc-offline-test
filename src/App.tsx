@@ -455,12 +455,13 @@ function ObliqueTestReceiver() {
   };
 
   const warpPerspective = (
-    ctx: CanvasRenderingContext2D,
+    sourceCtx: CanvasRenderingContext2D,
+    outputCtx: CanvasRenderingContext2D,
     source: HTMLCanvasElement,
     p: { x: number; y: number }[],
     outputSize: number,
   ) => {
-    const image = ctx.getImageData(0, 0, source.width, source.height);
+    const image = sourceCtx.getImageData(0, 0, source.width, source.height);
     const src = image.data;
     const output = ctx.createImageData(outputSize, outputSize);
     const dst = output.data;
@@ -526,7 +527,7 @@ function ObliqueTestReceiver() {
       }
     }
 
-    ctx.putImageData(output, 0, 0);
+    outputCtx.putImageData(output, 0, 0);
   };
 
   const scan = () => {
@@ -550,6 +551,9 @@ function ObliqueTestReceiver() {
       frameRef.current = requestAnimationFrame(scan);
       return;
     }
+
+    warpCtx.fillStyle = "#ffffff";
+    warpCtx.fillRect(0, 0, 320, 320);
 
     const sourceSize = Math.min(video.videoWidth, video.videoHeight);
     const sx = (video.videoWidth - sourceSize) / 2;
@@ -645,7 +649,7 @@ function ObliqueTestReceiver() {
         ctx.closePath();
         ctx.stroke();
 
-        warpPerspective(warpCtx, sourceCanvas, points.map((p) => ({
+        warpPerspective(ctx, warpCtx, sourceCanvas, points.map((p) => ({
           x: (p.x + 0.5) * block,
           y: (p.y + 0.5) * block,
         })), 320);
