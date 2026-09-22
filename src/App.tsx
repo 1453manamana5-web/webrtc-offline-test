@@ -463,7 +463,7 @@ function ObliqueTestReceiver() {
   ) => {
     const image = sourceCtx.getImageData(0, 0, source.width, source.height);
     const src = image.data;
-    const output = ctx.createImageData(outputSize, outputSize);
+    const output = outputCtx.createImageData(outputSize, outputSize);
     const dst = output.data;
 
     const [tl, tr, br, bl] = p;
