@@ -595,7 +595,7 @@ function ObliqueTestReceiver() {
       <h2>四隅を探す</h2>
       <p className="hint">7×7認識はまだ行わず、マーカーらしい黒領域の四隅だけを推定します。</p>
 
-      <div className="camera-wrap">
+      <div className="camera-wrap oblique-camera">
         <video ref={videoRef} muted playsInline />
         <canvas ref={canvasRef} className="camera-overlay" />
         <div className="scan-hud">
@@ -633,21 +633,6 @@ function App() {
         <div className="eyebrow">OPTICAL MARKER ORIENTATION TEST</div>
         <h1>独自マーカー向き検出</h1>
         <p className="sub">マーカーを発見したあと、位置・大きさ・向きを取得します。</p>
-
-        {mode === "select" && (
-          <div className="role-grid">
-            <button className="role-button" onClick={() => setMode("send")}>
-              <span>送信側</span>
-              <strong>模様を表示</strong>
-              <small>向き検出用マーカー</small>
-            </button>
-            <button className="role-button" onClick={() => setMode("receive")}>
-              <span>受信側</span>
-              <strong>カメラで探す</strong>
-              <small>位置・大きさ・向きを取得</small>
-            </button>
-          </div>
-        )}
 
         {mode === "select" && (
           <div className="role-grid">
