@@ -13,6 +13,8 @@ const MARKER = [
 const INNER = MARKER.flat();
 const FOUND_ON_FRAMES = 3;
 const FOUND_OFF_FRAMES = 5;
+const ANGLE_HISTORY_SIZE = 5;
+const ANGLE_HOLD_FRAMES = 5;
 
 function Marker() {
   return (
@@ -37,6 +39,23 @@ function Sender() {
   );
 }
 
+function circularAverage(angles: number[]) {
+  if (angles.length === 0) return null;
+
+  let sin = 0;
+  let cos = 0;
+
+  for (const angle of angles) {
+    const radians = angle * Math.PI / 180;
+    sin += Math.sin(radians);
+    cos += Math.cos(radians);
+  }
+
+  let result = Math.atan2(sin / angles.length, cos / angles.length) * 180 / Math.PI;
+  if (result < 0) result += 360;
+  return result;
+}
+
 function Receiver() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -44,12 +63,21 @@ function Receiver() {
   const foundRef = useRef(false);
   const onCountRef = useRef(0);
   const offCountRef = useRef(0);
+  const angleHistoryRef = useRef<number[]>([]);
+  const lastAngleRef = useRef<number | null>(null);
+  const angleMissCountRef = useRef(0);
   const [running, setRunning] = useState(false);
   const [found, setFound] = useState(false);
   const [info, setInfo] = useState("—");
   const [position, setPosition] = useState("—");
   const [orientation, setOrientation] = useState("—");
   const [error, setError] = useState("");
+
+  const resetAngleSmoothing = () => {
+    angleHistoryRef.current = [];
+    lastAngleRef.current = null;
+    angleMissCountRef.current = 0;
+  };
 
   const stop = () => {
     if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
@@ -62,6 +90,7 @@ function Receiver() {
     foundRef.current = false;
     onCountRef.current = 0;
     offCountRef.current = 0;
+    resetAngleSmoothing();
     setFound(false);
     setPosition("—");
     setOrientation("—");
@@ -179,8 +208,6 @@ function Receiver() {
         const shapeScore = matches / INNER.length;
         if (shapeScore < 0.82) continue;
 
-        // 外枠の中心から周囲を探索し、右下の目印に相当する小さな黒領域を探す。
-        // 目印はマーカー本体から少し離れているので、外枠と接続していない。
         const cx = (minX + maxX + 1) / 2;
         const cy = (minY + maxY + 1) / 2;
         const radiusMin = Math.min(bw, bh) * 0.62;
@@ -194,12 +221,9 @@ function Receiver() {
             const distance = Math.hypot(dx, dy);
             if (distance < radiusMin || distance > radiusMax || dark[y * w + x] === 0) continue;
 
-            // マーカー本体の外側にある黒画素を、近さと小ささで候補化する。
-            const direction = Math.atan2(dy, dx);
             const distanceScore = 1 - Math.abs(distance - Math.min(bw, bh) * 0.76) / (Math.min(bw, bh) * 0.30);
             candidates.push({ x, y, score: Math.max(0, distanceScore) });
             if (candidates.length > 500) break;
-            void direction;
           }
           if (candidates.length > 500) break;
         }
@@ -215,7 +239,6 @@ function Receiver() {
           }
         }
 
-        // 本物の目印なら中心から右下方向に来る。画面上の角度を算出する。
         let angle = 0;
         if (dotScore > 0) {
           angle = Math.atan2(dotY - cy, dotX - cx) * 180 / Math.PI;
@@ -249,9 +272,26 @@ function Receiver() {
         setPosition(`中心 X ${normalizedX}% / Y ${normalizedY}% / サイズ ${sizePercent}%`);
 
         if (bestDotScore > 0.2) {
-          setOrientation(`目印方向 ${Math.round(bestAngle)}°`);
+          angleMissCountRef.current = 0;
+          angleHistoryRef.current.push(bestAngle);
+
+          if (angleHistoryRef.current.length > ANGLE_HISTORY_SIZE) {
+            angleHistoryRef.current.shift();
+          }
+
+          const smoothedAngle = circularAverage(angleHistoryRef.current);
+          if (smoothedAngle !== null) {
+            lastAngleRef.current = smoothedAngle;
+            setOrientation(`目印方向 ${Math.round(smoothedAngle)}°`);
+          }
         } else {
-          setOrientation("目印を探索中");
+          angleMissCountRef.current += 1;
+
+          if (lastAngleRef.current !== null && angleMissCountRef.current <= ANGLE_HOLD_FRAMES) {
+            setOrientation(`目印方向 ${Math.round(lastAngleRef.current)}°`);
+          } else {
+            setOrientation("目印を探索中");
+          }
         }
 
         if (!foundRef.current && onCountRef.current >= FOUND_ON_FRAMES) {
@@ -261,11 +301,20 @@ function Receiver() {
       } else {
         offCountRef.current += 1;
         onCountRef.current = 0;
+        angleMissCountRef.current += 1;
+
+        if (lastAngleRef.current !== null && angleMissCountRef.current <= ANGLE_HOLD_FRAMES) {
+          setOrientation(`目印方向 ${Math.round(lastAngleRef.current)}°`);
+        } else if (foundRef.current) {
+          setOrientation("目印を探索中");
+        }
+
         if (foundRef.current && offCountRef.current >= FOUND_OFF_FRAMES) {
           foundRef.current = false;
           setFound(false);
           setPosition("—");
           setOrientation("—");
+          resetAngleSmoothing();
         }
       }
 
@@ -286,6 +335,7 @@ function Receiver() {
       foundRef.current = false;
       onCountRef.current = 0;
       offCountRef.current = 0;
+      resetAngleSmoothing();
       setPosition("—");
       setOrientation("—");
 
