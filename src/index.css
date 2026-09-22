@@ -189,3 +189,21 @@ h1 { margin: 8px 0; font-size: clamp(28px, 6vw, 44px); }
   .input-row { flex-direction: column; }
   .optical-frame { width: min(88vw, 520px); }
 }
+
+
+.detect-frame {
+  width: min(560px, 90vw);
+  aspect-ratio: 1;
+  margin: 28px auto 12px;
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  grid-template-rows: repeat(8, 1fr);
+  gap: 0;
+  background: #fff;
+  border: 12px solid #fff;
+  box-shadow: 0 12px 36px rgba(0,0,0,.35);
+}
+.detect-cell { background: #fff; }
+.detect-cell.on { background: #000; }
+.detect-marker { text-align: center; color: #74849b; font-size: 12px; letter-spacing: .12em; }
+.detect-target { width: min(80%, 80vh); }
