@@ -11,6 +11,8 @@ const MARKER = [
 ];
 
 const INNER = MARKER.flat();
+const FOUND_ON_FRAMES = 3;
+const FOUND_OFF_FRAMES = 5;
 
 function Marker() {
   return (
@@ -39,6 +41,9 @@ function Receiver() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const frameRef = useRef<number | null>(null);
+  const foundRef = useRef(false);
+  const onCountRef = useRef(0);
+  const offCountRef = useRef(0);
   const [running, setRunning] = useState(false);
   const [found, setFound] = useState(false);
   const [info, setInfo] = useState("—");
@@ -52,6 +57,10 @@ function Receiver() {
       video.srcObject.getTracks().forEach((track) => track.stop());
       video.srcObject = null;
     }
+    foundRef.current = false;
+    onCountRef.current = 0;
+    offCountRef.current = 0;
+    setFound(false);
     setRunning(false);
   };
 
@@ -143,7 +152,6 @@ function Receiver() {
         const fill = area / (bw * bh);
         if (ratio < 0.72 || ratio > 1.28 || fill < 0.45) continue;
 
-        // 候補の外接矩形を7×7に正規化し、マーカー固有の形状と比較する。
         const sample: number[] = [];
         for (let row = 0; row < 7; row++) {
           for (let col = 0; col < 7; col++) {
@@ -160,7 +168,6 @@ function Receiver() {
 
         const shapeScore = matches / INNER.length;
 
-        // 右下の小さな黒点も候補領域の外側にあるか確認。
         const dotX = Math.floor(minX + bw * 1.12);
         const dotY = Math.floor(minY + bh * 1.12);
         let dotDark = false;
@@ -180,9 +187,29 @@ function Receiver() {
         }
       }
 
-      const isFound = bestScore >= 0.82 && bestArea >= 80;
-      setFound(isFound);
-      setInfo(bestScore > 0 ? `形状一致 ${Math.round(bestScore * 100)}% / 面積 ${bestArea} / ${bestBox}` : `探索中 / 明暗差 ${Math.round(max - min)}`);
+      const candidateFound = bestScore >= 0.82 && bestArea >= 80;
+
+      if (candidateFound) {
+        onCountRef.current += 1;
+        offCountRef.current = 0;
+        if (!foundRef.current && onCountRef.current >= FOUND_ON_FRAMES) {
+          foundRef.current = true;
+          setFound(true);
+        }
+      } else {
+        offCountRef.current += 1;
+        onCountRef.current = 0;
+        if (foundRef.current && offCountRef.current >= FOUND_OFF_FRAMES) {
+          foundRef.current = false;
+          setFound(false);
+        }
+      }
+
+      setInfo(
+        bestScore > 0
+          ? `形状一致 ${Math.round(bestScore * 100)}% / 面積 ${bestArea} / ${bestBox} / ${foundRef.current ? "安定検出" : "候補"}`
+          : `探索中 / 明暗差 ${Math.round(max - min)}`,
+      );
     }
 
     frameRef.current = requestAnimationFrame(scan);
@@ -192,6 +219,9 @@ function Receiver() {
     try {
       setError("");
       setFound(false);
+      foundRef.current = false;
+      onCountRef.current = 0;
+      offCountRef.current = 0;
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: { ideal: "environment" },
@@ -216,7 +246,7 @@ function Receiver() {
     <div className="optical-panel">
       <div className="mode-label">受信側</div>
       <h2>マーカーを探す</h2>
-      <p className="hint">画像全体から候補を探し、その形が本物のマーカーに近いか判定します。</p>
+      <p className="hint">3フレーム連続で確認してFOUNDにし、5フレーム連続で見失うまで表示を維持します。</p>
       <div className={`camera-wrap ${found ? "marker-found" : ""}`}>
         <video ref={videoRef} muted playsInline />
         <div className="scan-hud">
