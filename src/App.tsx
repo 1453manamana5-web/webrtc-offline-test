@@ -1228,9 +1228,13 @@ function CommunicationReceiver() {
       sample.push(dark[py*G+px]);
     }
 
-    const h=[0,1,2,3,4,5,6,7].map(i=>i<6?
-      sample[[4*24+9,4*24+10,4*24+11,5*24+9,5*24+10,5*24+11][i]]:
-      sample[4*24+12+i-6]);
+    const h = [
+      sample[4 * 24 + 9], sample[4 * 24 + 10], sample[4 * 24 + 11],
+      sample[5 * 24 + 9], sample[5 * 24 + 10], sample[5 * 24 + 11],
+      sample[4 * 24 + 12], sample[4 * 24 + 13], sample[4 * 24 + 14],
+      sample[4 * 24 + 15], sample[4 * 24 + 16], sample[4 * 24 + 17],
+      sample[4 * 24 + 18], sample[4 * 24 + 19],
+    ];
     const t=h[0]?"STATUS":h[1]?"TICKET":"UNKNOWN";
     let n=0;for(let i=0;i<4;i++)n|=h[2+i]<<i;
     let len=0;for(let i=0;i<8;i++)len|=h[6+i]<<i;len=Math.min(12,len);
