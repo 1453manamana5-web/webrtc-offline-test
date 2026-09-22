@@ -431,6 +431,60 @@ function convexHull(points: { x: number; y: number }[]) {
   return lower.concat(upper);
 }
 
+
+function findOcclusionTolerantBox(
+  dark: Uint8Array,
+  w: number,
+  h: number,
+  marker: number[][],
+) {
+  let best: { score: number; x: number; y: number; size: number; visibleDark: number } | null = null;
+
+  // Fallback detector: instead of requiring one connected black region,
+  // search for the marker's 7x7 structure while allowing several cells
+  // to be hidden by a finger.
+  for (let size = 20; size <= 72; size += 4) {
+    for (let y = 0; y <= h - size; y += 3) {
+      for (let x = 0; x <= w - size; x += 3) {
+        let matches = 0;
+        let expectedDark = 0;
+        let visibleDark = 0;
+
+        for (let row = 0; row < 7; row++) {
+          for (let col = 0; col < 7; col++) {
+            const px = Math.min(w - 1, Math.floor(x + ((col + 0.5) / 7) * size));
+            const py = Math.min(h - 1, Math.floor(y + ((row + 0.5) / 7) * size));
+            const observed = dark[py * w + px];
+
+            if (marker[row][col] === 1) {
+              expectedDark++;
+              if (observed) {
+                matches++;
+                visibleDark++;
+              }
+            } else if (!observed) {
+              matches++;
+            }
+          }
+        }
+
+        // A finger may hide some cells. Require enough of the black
+        // structure to remain visible, but do not require every cell.
+        const score = matches / 49;
+        const darkVisibility = visibleDark / expectedDark;
+
+        if (darkVisibility < 0.45 || score < 0.68) continue;
+
+        if (!best || score > best.score) {
+          best = { score, x, y, size, visibleDark };
+        }
+      }
+    }
+  }
+
+  return best;
+}
+
 function ObliqueTestReceiver() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const sourceCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -652,6 +706,8 @@ function ObliqueTestReceiver() {
     let bestArea = 0;
     let bestPoints: { x: number; y: number }[] = [];
 
+    // Primary detector: connected dark region, which is fast and works well
+    // when the marker is fully visible.
     for (let start = 0; start < dark.length; start++) {
       if (!dark[start] || seen[start]) continue;
       const queue = [start];
@@ -664,6 +720,7 @@ function ObliqueTestReceiver() {
         const x = p % w;
         const y = Math.floor(p / w);
         points.push({ x, y });
+
         for (const n of [p - 1, p + 1, p - w, p + w]) {
           if (n < 0 || n >= dark.length || seen[n] || !dark[n]) continue;
           const nx = n % w;
@@ -686,13 +743,31 @@ function ObliqueTestReceiver() {
       bestPoints = points;
     }
 
+    // If the finger broke the black border into separate pieces, the
+    // connected-component detector can lose the marker entirely.
+    // Fall back to a tolerant 7x7 template search.
+    if (bestPoints.length === 0) {
+      const fallback = findOcclusionTolerantBox(dark, w, h, MARKER);
+
+      if (fallback) {
+        const x = fallback.x;
+        const y = fallback.y;
+        const size = fallback.size;
+
+        bestPoints = [
+          { x: Math.floor(x / block), y: Math.floor(y / block) },
+          { x: Math.floor((x + size) / block), y: Math.floor(y / block) },
+          { x: Math.floor((x + size) / block), y: Math.floor((y + size) / block) },
+          { x: Math.floor(x / block), y: Math.floor((y + size) / block) },
+        ];
+        bestArea = fallback.visibleDark;
+      }
+    }
+
     if (bestPoints.length > 0) {
       const hull = convexHull(bestPoints);
-      if (hull.length >= 4) {
-        const center = hull.reduce((sum, p) => ({ x: sum.x + p.x, y: sum.y + p.y }), { x: 0, y: 0 });
-        center.x /= hull.length;
-        center.y /= hull.length;
 
+      if (hull.length >= 4) {
         const tl = hull.reduce((a, b) => (a.x + a.y < b.x + b.y ? a : b));
         const br = hull.reduce((a, b) => (a.x + a.y > b.x + b.y ? a : b));
         const tr = hull.reduce((a, b) => (a.x - a.y > b.x - b.y ? a : b));
@@ -703,10 +778,10 @@ function ObliqueTestReceiver() {
         ctx.lineWidth = 3;
         ctx.beginPath();
         points.forEach((p, i) => {
-          const x = (p.x + 0.5) * block;
-          const y = (p.y + 0.5) * block;
-          if (i === 0) ctx.moveTo(x, y);
-          else ctx.lineTo(x, y);
+          const px = (p.x + 0.5) * block;
+          const py = (p.y + 0.5) * block;
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
         });
         ctx.closePath();
         ctx.stroke();
