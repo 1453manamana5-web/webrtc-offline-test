@@ -401,6 +401,36 @@ function Receiver() {
 }
 
 
+function convexHull(points: { x: number; y: number }[]) {
+  if (points.length <= 3) return points;
+
+  const sorted = [...points].sort((a, b) => a.x - b.x || a.y - b.y);
+
+  const cross = (o: { x: number; y: number }, a: { x: number; y: number }, b: { x: number; y: number }) =>
+    (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+
+  const lower: { x: number; y: number }[] = [];
+  for (const p of sorted) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) {
+      lower.pop();
+    }
+    lower.push(p);
+  }
+
+  const upper: { x: number; y: number }[] = [];
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    const p = sorted[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) {
+      upper.pop();
+    }
+    upper.push(p);
+  }
+
+  lower.pop();
+  upper.pop();
+  return lower.concat(upper);
+}
+
 function ObliqueTestReceiver() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -408,6 +438,7 @@ function ObliqueTestReceiver() {
   const [running, setRunning] = useState(false);
   const [found, setFound] = useState(false);
   const [corners, setCorners] = useState("—");
+  const [hullInfo, setHullInfo] = useState("—");
   const [error, setError] = useState("");
 
   const stop = () => {
@@ -421,6 +452,7 @@ function ObliqueTestReceiver() {
     setRunning(false);
     setFound(false);
     setCorners("—");
+    setHullInfo("—");
   };
 
   const scan = () => {
@@ -516,49 +548,73 @@ function ObliqueTestReceiver() {
       ctx.clearRect(0, 0, size, size);
 
       if (bestPoints.length > 0) {
-        const tl = bestPoints.reduce((a, b) => (a.x + a.y < b.x + b.y ? a : b));
-        const br = bestPoints.reduce((a, b) => (a.x + a.y > b.x + b.y ? a : b));
-        const tr = bestPoints.reduce((a, b) => (a.x - a.y > b.x - b.y ? a : b));
-        const bl = bestPoints.reduce((a, b) => (a.x - a.y < b.x - b.y ? a : b));
+        const hull = convexHull(bestPoints);
 
-        const points = [tl, tr, br, bl];
+        if (hull.length >= 4) {
+          const center = hull.reduce(
+            (sum, p) => ({ x: sum.x + p.x, y: sum.y + p.y }),
+            { x: 0, y: 0 },
+          );
+          center.x /= hull.length;
+          center.y /= hull.length;
 
-        ctx.strokeStyle = "#55c98a";
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        points.forEach((p, i) => {
-          const x = (p.x + 0.5) * block;
-          const y = (p.y + 0.5) * block;
-          if (i === 0) ctx.moveTo(x, y);
-          else ctx.lineTo(x, y);
-        });
-        ctx.closePath();
-        ctx.stroke();
+          const cornersFound = hull
+            .map((p) => ({
+              ...p,
+              angle: Math.atan2(p.y - center.y, p.x - center.x),
+              distance: Math.hypot(p.x - center.x, p.y - center.y),
+            }))
+            .sort((a, b) => a.angle - b.angle);
 
-        ctx.fillStyle = "#55c98a";
-        points.forEach((p) => {
+          const tl = cornersFound.reduce((a, b) => (a.x + a.y < b.x + b.y ? a : b));
+          const br = cornersFound.reduce((a, b) => (a.x + a.y > b.x + b.y ? a : b));
+          const tr = cornersFound.reduce((a, b) => (a.x - a.y > b.x - b.y ? a : b));
+          const bl = cornersFound.reduce((a, b) => (a.x - a.y < b.x - b.y ? a : b));
+
+          const points = [tl, tr, br, bl];
+
+          ctx.strokeStyle = "#55c98a";
+          ctx.lineWidth = 3;
           ctx.beginPath();
-          ctx.arc((p.x + 0.5) * block, (p.y + 0.5) * block, 5, 0, Math.PI * 2);
-          ctx.fill();
-        });
+          points.forEach((p, i) => {
+            const x = (p.x + 0.5) * block;
+            const y = (p.y + 0.5) * block;
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          });
+          ctx.closePath();
+          ctx.stroke();
 
-        const names = ["左上", "右上", "右下", "左下"];
-        ctx.fillStyle = "#fff";
-        ctx.font = "bold 12px system-ui";
-        points.forEach((p, i) => {
-          ctx.fillText(names[i], (p.x + 0.5) * block + 7, (p.y + 0.5) * block - 7);
-        });
+          ctx.fillStyle = "#55c98a";
+          points.forEach((p) => {
+            ctx.beginPath();
+            ctx.arc((p.x + 0.5) * block, (p.y + 0.5) * block, 5, 0, Math.PI * 2);
+            ctx.fill();
+          });
 
-        setFound(true);
-        setCorners(
-          points
-            .map((p, i) => `${names[i]} ${Math.round((p.x / w) * 100)}%,${Math.round((p.y / h) * 100)}%`)
-            .join(" / "),
-        );
+          const names = ["左上", "右上", "右下", "左下"];
+          ctx.fillStyle = "#fff";
+          ctx.font = "bold 12px system-ui";
+          points.forEach((p, i) => {
+            ctx.fillText(names[i], (p.x + 0.5) * block + 7, (p.y + 0.5) * block - 7);
+          });
+
+          setFound(true);
+          setCorners(
+            points
+              .map((p, i) => `${names[i]} ${Math.round((p.x / w) * 100)}%,${Math.round((p.y / h) * 100)}%`)
+              .join(" / "),
+          );
+          setHullInfo(`外周点 ${hull.length}点 / 黒領域 ${bestArea}px`);
+        } else {
+          setFound(false);
+          setCorners("外周を探索中");
+          setHullInfo("外周点が不足");
+        }
       } else {
-        ctx.clearRect(0, 0, size, size);
         setFound(false);
-        setCorners("四隅を探索中");
+        setCorners("マーカーを探索中");
+        setHullInfo("—");
       }
     }
 
@@ -591,15 +647,15 @@ function ObliqueTestReceiver() {
 
   return (
     <div className="optical-panel">
-      <div className="mode-label">斜めテスト</div>
-      <h2>四隅を探す</h2>
-      <p className="hint">7×7認識はまだ行わず、マーカーらしい黒領域の四隅だけを推定します。</p>
+      <div className="mode-label">斜めテスト 2</div>
+      <h2>外周から四隅を探す</h2>
+      <p className="hint">黒い領域全体の凸包を使って、内部模様ではなく外周から四隅を推定します。</p>
 
       <div className="camera-wrap oblique-camera">
         <video ref={videoRef} muted playsInline />
         <canvas ref={canvasRef} className="camera-overlay" />
         <div className="scan-hud">
-          <span>{found ? "CORNERS FOUND" : "SEARCHING..."}</span>
+          <span>{found ? "OUTLINE FOUND" : "SEARCHING..."}</span>
         </div>
       </div>
 
@@ -610,13 +666,15 @@ function ObliqueTestReceiver() {
       )}
 
       <div className={found ? "receive-result success" : "receive-result"}>
-        <span>{found ? "四隅を推定" : "四隅検出待ち"}</span>
+        <span>{found ? "外周を推定" : "外周検出待ち"}</span>
         <strong>{found ? "FOUND" : "—"}</strong>
       </div>
 
       <div className="debug-panel">
         <div className="debug-title">推定した四隅</div>
         <div className="debug-info">{corners}</div>
+        <div className="debug-title">外周情報</div>
+        <div className="debug-info">{hullInfo}</div>
       </div>
 
       {error && <div className="error">{error}</div>}
