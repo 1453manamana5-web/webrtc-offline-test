@@ -1040,7 +1040,8 @@ function makeCommunicationFrame(frame: typeof TEST_FRAMES[number]) {
   cells[5][4] = 0;
   cells[5][5] = 1;
 
-  // Frame type + sequence are distributed through the central area.
+  // Frame type + sequence + payload length.
+  const payloadLength = Math.min(12, new TextEncoder().encode(frame.payload).length);
   const header = [
     frame.type === "STATUS" ? 1 : 0,
     frame.type === "TICKET" ? 1 : 0,
@@ -1048,11 +1049,14 @@ function makeCommunicationFrame(frame: typeof TEST_FRAMES[number]) {
     (frame.id >> 1) & 1,
     (frame.id >> 2) & 1,
     (frame.id >> 3) & 1,
+    ...Array.from({ length: 8 }, (_, i) => (payloadLength >> i) & 1),
   ];
 
   const headerCells = [
     [4, 9], [4, 10], [4, 11],
     [5, 9], [5, 10], [5, 11],
+    [4, 12], [4, 13], [4, 14], [4, 15],
+    [4, 16], [4, 17], [4, 18], [4, 19],
   ];
 
   header.forEach((bit, i) => {
