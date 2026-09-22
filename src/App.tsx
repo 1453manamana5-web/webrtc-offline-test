@@ -30,13 +30,25 @@ function waitForIceGatheringComplete(pc: RTCPeerConnection): Promise<void> {
   });
 }
 
-function encodeSignal(payload: SignalPayload) {
+async function encodeSignal(payload: SignalPayload) {
   const json = JSON.stringify(payload);
-  return btoa(unescape(encodeURIComponent(json)));
+  const bytes = new TextEncoder().encode(json);
+  const compressed = await new Response(
+    new Blob([bytes]).stream().pipeThrough(new CompressionStream("deflate-raw"))
+  ).arrayBuffer();
+
+  const binary = String.fromCharCode(...new Uint8Array(compressed));
+  return btoa(binary);
 }
 
-function decodeSignal(value: string): SignalPayload {
-  return JSON.parse(decodeURIComponent(escape(atob(value)))) as SignalPayload;
+async function decodeSignal(value: string): Promise<SignalPayload> {
+  const binary = atob(value);
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  const decompressed = await new Response(
+    new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate-raw"))
+  ).arrayBuffer();
+
+  return JSON.parse(new TextDecoder().decode(decompressed)) as SignalPayload;
 }
 
 function App() {
@@ -109,7 +121,7 @@ function App() {
       await waitForIceGatheringComplete(pc);
       const local = pc.localDescription;
       if (!local) throw new Error("Offerを取得できませんでした。");
-      const encoded = encodeSignal({ type: "offer", sdp: local });
+      const encoded = await encodeSignal({ type: "offer", sdp: local });
       setSignal(encoded);
       setStatus("Offer準備完了。Bで読み取ってください。");
     } catch (e) {
@@ -132,7 +144,7 @@ function App() {
       await waitForIceGatheringComplete(pc);
       const local = pc.localDescription;
       if (!local) throw new Error("Answerを取得できませんでした。");
-      setSignal(encodeSignal({ type: "answer", sdp: local }));
+      setSignal(await encodeSignal({ type: "answer", sdp: local }));
       setStatus("Answer準備完了。Aで読み取ってください。");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Answer作成に失敗しました。");
@@ -166,8 +178,8 @@ function App() {
       await scanner.start(
         { facingMode: "environment" },
         {
-          fps: 10,
-          qrbox: { width: 280, height: 280 },
+          fps: 20,
+          qrbox: { width: 360, height: 360 },
         },
         async (decodedText) => {
           await scanner.stop().catch(() => {});
@@ -241,9 +253,9 @@ function App() {
                 <h2>{signal.startsWith("ey") ? (role === "host" ? "AのOffer" : "BのAnswer") : "接続情報"}</h2>
                 <p>もう一方の端末でこのQRを読み取ります。</p>
                 <div className="qr">
-                  <QRCodeSVG value={signal} size={280} level="L" />
+                  <QRCodeSVG value={signal} size={360} level="L" includeMargin />
                 </div>
-                <div className="signal-size">{signal.length.toLocaleString()} characters</div>
+                <div className="signal-size">{signal.length.toLocaleString()} characters · compressed signaling</div>
               </div>
             )}
 
