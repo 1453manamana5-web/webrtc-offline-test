@@ -436,8 +436,13 @@ function ObliqueTestReceiver() {
   const sourceCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const warpCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const frameRef = useRef<number | null>(null);
+  const warpedFoundRef = useRef(false);
+  const warpedOnCountRef = useRef(0);
+  const warpedOffCountRef = useRef(0);
   const [running, setRunning] = useState(false);
   const [found, setFound] = useState(false);
+  const [warpedFound, setWarpedFound] = useState(false);
+  const [warpScore, setWarpScore] = useState(0);
   const [corners, setCorners] = useState("—");
   const [error, setError] = useState("");
 
@@ -451,6 +456,11 @@ function ObliqueTestReceiver() {
     }
     setRunning(false);
     setFound(false);
+    warpedFoundRef.current = false;
+    warpedOnCountRef.current = 0;
+    warpedOffCountRef.current = 0;
+    setWarpedFound(false);
+    setWarpScore(0);
     setCorners("—");
   };
 
@@ -528,6 +538,58 @@ function ObliqueTestReceiver() {
     }
 
     outputCtx.putImageData(output, 0, 0);
+  };
+
+  const recognizeWarpedMarker = (warpCtx: CanvasRenderingContext2D) => {
+    const size = 320;
+    const image = warpCtx.getImageData(0, 0, size, size);
+    const data = image.data;
+    const sample: number[] = [];
+    let min = 255;
+    let max = 0;
+
+    for (let i = 0; i < size * size; i++) {
+      const p = i * 4;
+      const value = (data[p] + data[p + 1] + data[p + 2]) / 3;
+      min = Math.min(min, value);
+      max = Math.max(max, value);
+    }
+
+    const threshold = min + (max - min) * 0.45;
+
+    for (let row = 0; row < 7; row++) {
+      for (let col = 0; col < 7; col++) {
+        const px = Math.min(size - 1, Math.floor(((col + 0.5) / 7) * size));
+        const py = Math.min(size - 1, Math.floor(((row + 0.5) / 7) * size));
+        const p = (py * size + px) * 4;
+        const value = (data[p] + data[p + 1] + data[p + 2]) / 3;
+        sample.push(value < threshold ? 1 : 0);
+      }
+    }
+
+    let matches = 0;
+    for (let i = 0; i < INNER.length; i++) {
+      if (sample[i] === INNER[i]) matches++;
+    }
+
+    const score = matches / INNER.length;
+    setWarpScore(Math.round(score * 100));
+
+    if (score >= 0.82) {
+      warpedOnCountRef.current += 1;
+      warpedOffCountRef.current = 0;
+      if (!warpedFoundRef.current && warpedOnCountRef.current >= FOUND_ON_FRAMES) {
+        warpedFoundRef.current = true;
+        setWarpedFound(true);
+      }
+    } else {
+      warpedOffCountRef.current += 1;
+      warpedOnCountRef.current = 0;
+      if (warpedFoundRef.current && warpedOffCountRef.current >= FOUND_OFF_FRAMES) {
+        warpedFoundRef.current = false;
+        setWarpedFound(false);
+      }
+    }
   };
 
   const scan = () => {
@@ -654,6 +716,7 @@ function ObliqueTestReceiver() {
           y: (p.y + 0.5) * block,
         })), 320);
 
+        recognizeWarpedMarker(warpCtx);
         setFound(true);
         setCorners(
           points
@@ -678,6 +741,11 @@ function ObliqueTestReceiver() {
   const start = async () => {
     try {
       setError("");
+      warpedFoundRef.current = false;
+      warpedOnCountRef.current = 0;
+      warpedOffCountRef.current = 0;
+      setWarpedFound(false);
+      setWarpScore(0);
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: false,
@@ -698,7 +766,7 @@ function ObliqueTestReceiver() {
     <div className="optical-panel">
       <div className="mode-label">透視補正テスト</div>
       <h2>斜めを正面に戻す</h2>
-      <p className="hint">検出した四隅から、マーカーを正方形に補正します。まだ7×7認識は行いません。</p>
+      <p className="hint">検出した四隅から正方形に補正し、その補正後の画像で7×7認識を試します。</p>
 
       <div className="warp-test-layout">
         <div>
@@ -713,6 +781,9 @@ function ObliqueTestReceiver() {
           <div className="test-label">透視補正後</div>
           <div className="warp-preview">
             <canvas ref={warpCanvasRef} />
+            <div className={warpedFound ? "warp-status found" : "warp-status"}>
+              {warpedFound ? "7×7 FOUND" : "7×7 SEARCHING"}
+            </div>
           </div>
         </div>
       </div>
@@ -724,11 +795,13 @@ function ObliqueTestReceiver() {
       )}
 
       <div className={found ? "receive-result success" : "receive-result"}>
-        <span>{found ? "四隅から透視補正" : "四隅検出待ち"}</span>
-        <strong>{found ? "WARPED" : "—"}</strong>
+        <span>{warpedFound ? "透視補正後の7×7認識" : found ? "四隅から透視補正中" : "四隅検出待ち"}</span>
+        <strong>{warpedFound ? "FOUND" : found ? "WARPED" : "—"}</strong>
       </div>
 
       <div className="debug-panel">
+        <div className="debug-title">7×7認識スコア</div>
+        <div className="debug-info">{warpScore}%</div>
         <div className="debug-title">検出した四隅</div>
         <div className="debug-info">{corners}</div>
       </div>
