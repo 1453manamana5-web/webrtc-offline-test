@@ -96,12 +96,12 @@ h1 { margin: 8px 0; font-size: clamp(28px,6vw,44px); }
   display: grid;
   grid-template-columns: repeat(24, 1fr);
   grid-template-rows: repeat(24, 1fr);
-  gap: 2px;
+  gap: 0;
   background: #f7f8fa;
 }
 
 .communication-cell {
-  border-radius: 3px;
+  border-radius: 0;
   background: #e7eaf0;
 }
 
