@@ -987,125 +987,79 @@ function ObliqueTestReceiver() {
 }
 
 
-const FRAME_SIZE = 24;
-
-const FRAME_ANCHORS = [
-  [0, 0], [0, 21], [21, 0], [21, 21],
-  [0, 11], [11, 0], [11, 21], [21, 11],
-];
+const FRAME_SIZE = 40;
+const DATA_SIZE = 24;
+const MARKER_OFFSET = 1;
 
 const TEST_FRAMES = [
-  {
-    type: "STATUS",
-    id: 1,
-    payload: "ENTRY-A|62|4",
-  },
-  {
-    type: "TICKET",
-    id: 2,
-    payload: "A00123|E|175852",
-  },
-  {
-    type: "TICKET",
-    id: 3,
-    payload: "A00124|E|175901",
-  },
-  {
-    type: "STATUS",
-    id: 4,
-    payload: "ENTRY-A|64|0",
-  },
+  { type: "STATUS", id: 1, payload: "ENTRY-A|62|4" },
+  { type: "TICKET", id: 2, payload: "A00123|E|175852" },
+  { type: "TICKET", id: 3, payload: "A00124|E|175901" },
+  { type: "STATUS", id: 4, payload: "ENTRY-A|64|0" },
 ];
 
+function putMarker(cells:number[][], top:number, left:number, rotate=0) {
+  for(let r=0;r<7;r++) for(let col=0;col<7;col++){
+    let rr=r, cc=col;
+    for(let k=0;k<rotate;k++){
+      const nextR=cc;
+      const nextC=6-rr;
+      rr=nextR; cc=nextC;
+    }
+    cells[top+r][left+col]=MARKER[rr][cc];
+  }
+}
+
 function makeCommunicationFrame(frame: typeof TEST_FRAMES[number]) {
-  const cells = Array.from({ length: FRAME_SIZE }, () =>
-    Array.from({ length: FRAME_SIZE }, () => 0),
-  );
+  const cells=Array.from({length:FRAME_SIZE},()=>Array.from({length:FRAME_SIZE},()=>0));
 
-  // Temporary calibration border. This gives the receiver a deterministic
-  // frame boundary; the distributed anchors remain inside it for the later
-  // occlusion-tolerant protocol.
-  for (let i = 0; i < FRAME_SIZE; i++) {
-    cells[0][i] = 1;
-    cells[FRAME_SIZE - 1][i] = 1;
-    cells[i][0] = 1;
-    cells[i][FRAME_SIZE - 1] = 1;
+  // Four corners reuse the marker technology already proven in the
+  // orientation/oblique tests. They define the communication rectangle.
+  putMarker(cells,1,1,0);
+  putMarker(cells,1,FRAME_SIZE-8,1);
+  putMarker(cells,FRAME_SIZE-8,FRAME_SIZE-8,2);
+  putMarker(cells,FRAME_SIZE-8,1,3);
+
+  const bytes=new TextEncoder().encode(frame.payload);
+  const dataBits:number[]=[];
+  for(const byte of bytes) for(let bit=7;bit>=0;bit--) dataBits.push((byte>>bit)&1);
+
+  // 24x24 data region. Each bit is repeated horizontally and vertically
+  // in 2x2 blocks. The first 12 bytes fit exactly in 6x16 blocks.
+  const data=Array.from({length:DATA_SIZE},()=>Array(DATA_SIZE).fill(0));
+  for(let i=0;i<96;i++){
+    const bit=dataBits[i]??0;
+    const br=Math.floor(i/16), bc=(i%16)*1;
+    const row=4+br, col=4+bc;
+    data[row][col]=bit;
   }
 
-  // Distributed discovery anchors remain separated so the final protocol
-  // can fall back to partial-frame discovery after the calibration test.
-  for (const [row, col] of FRAME_ANCHORS) {
-    for (let y = 0; y < 3; y++) {
-      for (let x = 0; x < 3; x++) {
-        const edge = y === 0 || y === 2 || x === 0 || x === 2;
-        cells[row + y][col + x] = edge ? 1 : 0;
-      }
-    }
-  }
-
-  // Orientation asymmetry: one small marker distinguishes the frame's
-  // rotation without creating a QR-like large corner block.
-  cells[4][4] = 1;
-  cells[4][5] = 1;
-  cells[5][4] = 0;
-  cells[5][5] = 1;
-
-  // Frame type + sequence + payload length.
-  const payloadLength = Math.min(12, new TextEncoder().encode(frame.payload).length);
-  const header = [
-    frame.type === "STATUS" ? 1 : 0,
-    frame.type === "TICKET" ? 1 : 0,
-    (frame.id >> 0) & 1,
-    (frame.id >> 1) & 1,
-    (frame.id >> 2) & 1,
-    (frame.id >> 3) & 1,
-    ...Array.from({ length: 8 }, (_, i) => (payloadLength >> i) & 1),
+  // Header is distributed in the first two data rows and repeated 2x2.
+  const len=Math.min(12,bytes.length);
+  const header=[
+    frame.type==="STATUS"?1:0,
+    frame.type==="TICKET"?1:0,
+    (frame.id>>0)&1,(frame.id>>1)&1,(frame.id>>2)&1,(frame.id>>3)&1,
+    ...Array.from({length:8},(_,i)=>(len>>i)&1)
   ];
-
-  // Duplicate each header bit into a 2x2 block. This makes the
-  // protocol much more tolerant of camera blur and small geometric errors.
-  header.forEach((bit, i) => {
-    const row = 4 + Math.floor(i / 7) * 2;
-    const col = 7 + (i % 7) * 2;
-    for (let dy = 0; dy < 2; dy++) {
-      for (let dx = 0; dx < 2; dx++) {
-        cells[row + dy][col + dx] = bit;
-      }
-    }
-  });
-
-  // Payload is repeated into separated blocks. This is only a visual
-  // prototype; the real protocol will add CRC/FEC later.
-  const bytes = new TextEncoder().encode(frame.payload);
-  const dataBits: number[] = [];
-  for (const byte of bytes) {
-    for (let bit = 7; bit >= 0; bit--) {
-      dataBits.push((byte >> bit) & 1);
-    }
+  for(let i=0;i<14;i++){
+    const row=0+Math.floor(i/7)*2;
+    const col=2+(i%7)*2;
+    for(let dy=0;dy<2;dy++)for(let dx=0;dx<2;dx++)
+      data[row+dy][col+dx]=header[i];
   }
 
-  // Encode each payload bit as a 2x2 block. The receiver uses a
-  // majority vote, so one blurred/partially covered cell does not
-  // immediately corrupt a byte.
-  for (let i = 0; i < 96; i++) {
-    const bit = dataBits[i] ?? 0;
-    const bitRow = Math.floor(i / 8);
-    const bitCol = i % 8;
-    const row = 8 + bitRow;
-    const col = 6 + bitCol * 2;
-    for (let dy = 0; dy < 1; dy++) {
-      for (let dx = 0; dx < 2; dx++) {
-        cells[row + dy][col + dx] = bit;
-      }
-    }
+  // Payload begins lower down, one byte per row-pair. It is intentionally
+  // separated from the corner markers.
+  for(let i=0;i<96;i++){
+    const bit=dataBits[i]??0;
+    const row=6+Math.floor(i/16);
+    const col=4+(i%16);
+    data[row][col]=bit;
   }
 
-  // Repeat each byte's first bit in a small secondary strip. It is
-  // reserved for future error correction and is not used for decoding yet.
-  for (let i = 0; i < 12; i++) {
-    const bit = dataBits[i * 8] ?? 0;
-    cells[20][6 + i] = bit;
-  }
+  for(let r=0;r<DATA_SIZE;r++) for(let col=0;col<DATA_SIZE;col++)
+    cells[8+r][8+col]=data[r][col];
 
   return cells;
 }
@@ -1127,10 +1081,10 @@ function CommunicationFrame() {
       <div className="mode-label">光通信フレーム試作</div>
       <h2>目立たない通信パターン</h2>
       <p className="hint">
-        24×24の分散型フレーム。四隅だけに情報を集中させず、画面の一部が隠れても残りから復元できる構造を試します。
+        これまでのマーカー検出・位置合わせ技術を通信に統合した試作です。四隅のマーカーから通信領域を決めます。
       </p>
 
-      <div className="communication-board">
+      <div className="communication-board hybrid-board">
         <div className="communication-grid">
           {cells.flatMap((row, rowIndex) =>
             row.map((bit, colIndex) => (
@@ -1172,15 +1126,15 @@ function CommunicationFrame() {
 function CommunicationReceiver() {
   const videoRef=useRef<HTMLVideoElement|null>(null);
   const canvasRef=useRef<HTMLCanvasElement|null>(null);
+  const warpRef=useRef<HTMLCanvasElement|null>(null);
   const raf=useRef<number|null>(null);
-  const tick=useRef(0);
   const [running,setRunning]=useState(false);
   const [found,setFound]=useState(false);
   const [score,setScore]=useState(0);
   const [type,setType]=useState("—");
   const [id,setId]=useState("—");
   const [payload,setPayload]=useState("—");
-  const [decodedHex,setDecodedHex]=useState("—");
+  const [geometry,setGeometry]=useState("—");
   const [error,setError]=useState("");
 
   const stop=()=>{
@@ -1188,153 +1142,148 @@ function CommunicationReceiver() {
     raf.current=null;
     const v=videoRef.current;
     if(v?.srcObject instanceof MediaStream){v.srcObject.getTracks().forEach(t=>t.stop());v.srcObject=null;}
-    setRunning(false);setFound(false);setScore(0);setType("—");setId("—");setPayload("—");setDecodedHex("—");
+    setRunning(false);setFound(false);setScore(0);setType("—");setId("—");setPayload("—");setGeometry("—");
   };
 
   const scan=()=>{
-    const v=videoRef.current, canvas=canvasRef.current;
-    if(!v||!canvas||v.readyState<2||!v.videoWidth){raf.current=requestAnimationFrame(scan);return;}
-    tick.current++;
-    if(tick.current%4!==0){raf.current=requestAnimationFrame(scan);return;}
+    const v=videoRef.current, canvas=canvasRef.current, warp=warpRef.current;
+    if(!v||!canvas||!warp||v.readyState<2||!v.videoWidth){raf.current=requestAnimationFrame(scan);return;}
 
-    const S=320,G=48;
-    canvas.width=S;canvas.height=S;
+    const S=360;
+    canvas.width=S; canvas.height=S;
     const ctx=canvas.getContext("2d",{willReadFrequently:true});
-    if(!ctx){raf.current=requestAnimationFrame(scan);return;}
+    const wctx=warp.getContext("2d",{willReadFrequently:true});
+    if(!ctx||!wctx){raf.current=requestAnimationFrame(scan);return;}
 
     const side=Math.min(v.videoWidth,v.videoHeight);
     ctx.drawImage(v,(v.videoWidth-side)/2,(v.videoHeight-side)/2,side,side,0,0,S,S);
     const img=ctx.getImageData(0,0,S,S).data;
+
+    // Reuse the old marker pipeline: threshold -> connected components ->
+    // 7x7 marker shape matching. Four matches become the quadrilateral.
+    const G=90, block=S/G;
     const gray=new Uint8Array(G*G);
     let min=255,max=0;
-
-    // Use the real fractional cell boundaries (320 / 48) instead of
-    // assuming every cell is exactly 7 pixels wide. This prevents a
-    // systematic sampling shift that can corrupt decoded bytes.
     for(let y=0;y<G;y++)for(let x=0;x<G;x++){
-      const x0=Math.floor(x*S/G), x1=Math.min(S,Math.ceil((x+1)*S/G));
-      const y0=Math.floor(y*S/G), y1=Math.min(S,Math.ceil((y+1)*S/G));
       let total=0,count=0;
+      const x0=Math.floor(x*block),x1=Math.min(S,Math.ceil((x+1)*block));
+      const y0=Math.floor(y*block),y1=Math.min(S,Math.ceil((y+1)*block));
       for(let yy=y0;yy<y1;yy++)for(let xx=x0;xx<x1;xx++){
         const p=(yy*S+xx)*4;
-        total+=(img[p]+img[p+1]+img[p+2])/3;
-        count++;
+        total+=(img[p]+img[p+1]+img[p+2])/3; count++;
       }
-      const val=count?total/count:255;
-      gray[y*G+x]=val;
-      min=Math.min(min,val);max=Math.max(max,val);
+      const val=total/count; gray[y*G+x]=val; min=Math.min(min,val); max=Math.max(max,val);
     }
-
-    const th=min+(max-min)*.48;
+    const th=min+(max-min)*.45;
     const dark=gray.map(v=>v<th?1:0);
+    const seen=new Uint8Array(G*G);
+    const foundMarkers:{x:number,y:number,size:number,score:number}[]=[];
 
-    // Calibration mode: locate the complete 24x24 frame from its outer
-    // border first. Unlike the old anchor search, this does not depend on
-    // a payload bit landing at exactly the right pixel.
-    const borderCells:number[][]=[];
-    for(let i=0;i<FRAME_SIZE;i++){
-      borderCells.push([0,i]);
-      borderCells.push([FRAME_SIZE-1,i]);
-      borderCells.push([i,0]);
-      borderCells.push([i,FRAME_SIZE-1]);
-    }
-
-    let best=0,bx=0,by=0,bs=0;
-    for(let size=18;size<=48;size+=1){
-      for(let y=0;y<=G-size;y+=1){
-        for(let x=0;x<=G-size;x+=1){
-          let darkCount=0;
-          for(const [rr,cc] of borderCells){
-            const px=Math.min(G-1,Math.max(0,Math.floor(x+(cc+.5)/FRAME_SIZE*size)));
-            const py=Math.min(G-1,Math.max(0,Math.floor(y+(rr+.5)/FRAME_SIZE*size)));
-            if(dark[py*G+px]) darkCount++;
-          }
-          const s=darkCount/borderCells.length;
-          if(s>best){best=s;bx=x;by=y;bs=size;}
+    for(let start=0;start<dark.length;start++){
+      if(!dark[start]||seen[start]) continue;
+      const q=[start]; seen[start]=1; let head=0;
+      let minX=G,minY=G,maxX=-1,maxY=-1,area=0;
+      while(head<q.length){
+        const p=q[head++],x=p%G,y=Math.floor(p/G); area++;
+        minX=Math.min(minX,x);maxX=Math.max(maxX,x);minY=Math.min(minY,y);maxY=Math.max(maxY,y);
+        for(const n of [p-1,p+1,p-G,p+G]){
+          if(n<0||n>=dark.length||seen[n]||!dark[n])continue;
+          const nx=n%G,ny=Math.floor(n/G);
+          if(Math.abs(nx-x)+Math.abs(ny-y)!==1)continue;
+          seen[n]=1;q.push(n);
         }
       }
+      const bw=maxX-minX+1,bh=maxY-minY+1;
+      if(area<18||bw<5||bh<5||bw>25||bh>25)continue;
+      const ratio=bw/bh;
+      if(ratio<.72||ratio>1.28)continue;
+
+      const sample:number[]=[];
+      for(let r=0;r<7;r++)for(let col=0;col<7;col++){
+        const px=Math.min(G-1,Math.floor(minX+((col+.5)/7)*bw));
+        const py=Math.min(G-1,Math.floor(minY+((r+.5)/7)*bh));
+        sample.push(dark[py*G+px]);
+      }
+      let matches=0;
+      for(let i=0;i<49;i++)if(sample[i]===INNER[i])matches++;
+      const s=matches/49;
+      if(s>=.78) foundMarkers.push({
+        x:(minX+maxX+1)/2,
+        y:(minY+maxY+1)/2,
+        size:(bw+bh)/2,
+        score:s
+      });
     }
 
-    setScore(Math.round(best*100));
-    if(best<.72){
-      setFound(false);setType("—");setId("—");setPayload("—");
+    // Deduplicate nearby detections.
+    const unique:{x:number,y:number,size:number,score:number}[]=[];
+    for(const m of foundMarkers){
+      if(unique.some(u=>Math.hypot(u.x-m.x,u.y-m.y)<m.size*.7))continue;
+      unique.push(m);
+    }
+
+    if(unique.length<4){
+      setFound(false);setScore(Math.round((unique.length/4)*100));setGeometry(`マーカー ${unique.length}/4`);
       raf.current=requestAnimationFrame(scan);return;
     }
 
-    // Refine the border geometry on the original 320×320 image.
-    // The coarse search only supplies a starting point; the final decoder
-    // uses the highest-resolution image for every 24x24 cell.
-    const roughX=bx*S/G;
-    const roughY=by*S/G;
-    const roughSize=bs*S/G;
-    const borderScoreAt=(x:number,y:number,size:number)=>{
-      let m=0;
-      for(const [rr,cc] of borderCells){
-        const cx=x+(cc+.5)/FRAME_SIZE*size;
-        const cy=y+(rr+.5)/FRAME_SIZE*size;
-        let total=0,count=0;
-        for(let yy=-1;yy<=1;yy++)for(let xx=-1;xx<=1;xx++){
-          const px=Math.min(S-1,Math.max(0,Math.round(cx+xx)));
-          const py=Math.min(S-1,Math.max(0,Math.round(cy+yy)));
-          const p=(py*S+px)*4;
-          total+=(img[p]+img[p+1]+img[p+2])/3;
-          count++;
-        }
-        if((total/count)<th)m++;
-      }
-      return m/borderCells.length;
-    };
-
-    let refinedX=roughX, refinedY=roughY, refinedSize=roughSize;
-    let refinedScore=0;
-    for(let size=roughSize-10;size<=roughSize+10;size+=1){
-      if(size<80||size>300)continue;
-      for(let y=Math.max(0,roughY-10);y<=Math.min(S-size,roughY+10);y+=1){
-        for(let x=Math.max(0,roughX-10);x<=Math.min(S-size,roughX+10);x+=1){
-          const s=borderScoreAt(x,y,size);
-          if(s>refinedScore){
-            refinedScore=s;refinedX=x;refinedY=y;refinedSize=size;
-          }
-        }
-      }
+    // Pick four spatially distinct marker centers.
+    const cx=unique.reduce((s,m)=>s+m.x,0)/unique.length;
+    const cy=unique.reduce((s,m)=>s+m.y,0)/unique.length;
+    const corners=[
+      unique.filter(m=>m.x<=cx&&m.y<=cy).sort((a,b)=>b.score-a.score)[0],
+      unique.filter(m=>m.x>cx&&m.y<=cy).sort((a,b)=>b.score-a.score)[0],
+      unique.filter(m=>m.x>cx&&m.y>cy).sort((a,b)=>b.score-a.score)[0],
+      unique.filter(m=>m.x<=cx&&m.y>cy).sort((a,b)=>b.score-a.score)[0],
+    ];
+    if(corners.some(c=>!c)){
+      raf.current=requestAnimationFrame(scan);return;
     }
 
+    const pts=corners.map(p=>({x:p.x*block,y:p.y*block}));
+    const [tl,tr,br,bl]=pts;
+
+    // Reuse the existing perspective-warp idea. The mapping is bilinear for
+    // this prototype; the next pass can replace it with a true homography.
+    const outputSize=320;
+    const out=wctx.createImageData(outputSize,outputSize);
+    const dst=out.data;
+    const src=img;
+    for(let oy=0;oy<outputSize;oy++)for(let ox=0;ox<outputSize;ox++){
+      const u=ox/(outputSize-1),vv=oy/(outputSize-1);
+      const topX=tl.x+(tr.x-tl.x)*u,topY=tl.y+(tr.y-tl.y)*u;
+      const botX=bl.x+(br.x-bl.x)*u,botY=bl.y+(br.y-bl.y)*u;
+      const sx=topX+(botX-topX)*vv,sy=topY+(botY-topY)*vv;
+      const px=Math.min(S-1,Math.max(0,Math.round(sx))),py=Math.min(S-1,Math.max(0,Math.round(sy)));
+      const sp=(py*S+px)*4,dp=(oy*outputSize+ox)*4;
+      dst[dp]=src[sp];dst[dp+1]=src[sp+1];dst[dp+2]=src[sp+2];dst[dp+3]=255;
+    }
+    wctx.putImageData(out,0,0);
+
+    // The four markers surround the 24x24 data area. Sample its center
+    // after perspective correction, just like the previous warp test.
+    const W=320, dataStart=8, dataSize=24, cell=W/40;
     const sample:number[]=[];
-    const frameX=refinedX;
-    const frameY=refinedY;
-    const frameSize=refinedSize;
-    const cellSize=frameSize/FRAME_SIZE;
-
-    for(let row=0;row<FRAME_SIZE;row++)for(let col=0;col<FRAME_SIZE;col++){
-      const cx=frameX+(col+0.5)*cellSize;
-      const cy=frameY+(row+0.5)*cellSize;
-      const radius=Math.max(1,Math.floor(cellSize*0.22));
+    let localMin=255,localMax=0;
+    for(let r=0;r<DATA_SIZE;r++)for(let col=0;col<DATA_SIZE;col++){
+      const cxp=(dataStart+col+.5)*cell, cyp=(dataStart+r+.5)*cell;
       let total=0,count=0;
-      for(let yy=-radius;yy<=radius;yy++)for(let xx=-radius;xx<=radius;xx++){
-        const px=Math.min(S-1,Math.max(0,Math.round(cx+xx)));
-        const py=Math.min(S-1,Math.max(0,Math.round(cy+yy)));
-        const p=(py*S+px)*4;
-        total+=(img[p]+img[p+1]+img[p+2])/3;
-        count++;
+      for(let yy=-1;yy<=1;yy++)for(let xx=-1;xx<=1;xx++){
+        const px=Math.min(W-1,Math.max(0,Math.round(cxp+xx))),py=Math.min(W-1,Math.max(0,Math.round(cyp+yy)));
+        const p=(py*W+px)*4,totalV=(out.data[p]+out.data[p+1]+out.data[p+2])/3;
+        total+=totalV;count++;localMin=Math.min(localMin,totalV);localMax=Math.max(localMax,totalV);
       }
-      sample.push((total/count)<th?1:0);
+      sample.push(total/count);
     }
-
-    const readBlockBit=(row:number,col:number)=>{
-      let darkCount=0;
-      for(let dy=0;dy<2;dy++)for(let dx=0;dx<2;dx++){
-        if(sample[(row+dy)*24+(col+dx)])darkCount++;
-      }
-      return darkCount>=2?1:0;
-    };
+    const localTh=localMin+(localMax-localMin)*.48;
+    const bit=(r:number,col:number)=>sample[r*DATA_SIZE+col]<localTh?1:0;
 
     const h:number[]=[];
     for(let i=0;i<14;i++){
-      const row=4+Math.floor(i/7)*2;
-      const col=7+(i%7)*2;
-      h.push(readBlockBit(row,col));
+      const r=Math.floor(i/7)*2,c=2+(i%7)*2;
+      let d=0;for(let dy=0;dy<2;dy++)for(let dx=0;dx<2;dx++)if(bit(r+dy,c+dx))d++;
+      h.push(d>=2?1:0);
     }
-
     const t=h[0]&&!h[1]?"STATUS":!h[0]&&h[1]?"TICKET":"UNKNOWN";
     let n=0;for(let i=0;i<4;i++)n|=h[2+i]<<i;
     let len=0;for(let i=0;i<8;i++)len|=h[6+i]<<i;
@@ -1342,72 +1291,46 @@ function CommunicationReceiver() {
 
     const bits:number[]=[];
     for(let i=0;i<96;i++){
-      const row=8+Math.floor(i/8);
-      const col=6+(i%8)*2;
-      let darkCount=0;
-      for(let dx=0;dx<2;dx++){
-        if(sample[row*24+col+dx])darkCount++;
-      }
-      bits.push(darkCount>=1?1:0);
+      const r=6+Math.floor(i/16),col=4+(i%16);
+      bits.push(bit(r,col));
     }
-
     const bytes:number[]=[];
     for(let i=0;i<len;i++){
-      let b=0;
-      for(let k=0;k<8;k++)b=(b<<1)|(bits[i*8+k]??0);
-      bytes.push(b);
+      let b=0;for(let k=0;k<8;k++)b=(b<<1)|(bits[i*8+k]??0);bytes.push(b);
     }
-
-    // Keep the payload decoder UTF-8 aware, but surface invalid byte
-    // sequences instead of displaying replacement characters as if they
-    // were valid data.
     let text="";
-    try{
-      text=new TextDecoder("utf-8",{fatal:true}).decode(new Uint8Array(bytes));
-    }catch{
-      text="復元エラー（データ再取得待ち）";
-    }
-
-    const hex=bytes.map(b=>b.toString(16).padStart(2,"0")).join(" ");
-    const ascii=bytes.map(b=>b>=32&&b<=126?String.fromCharCode(b):"·").join("");
-    setFound(true);
-    setType(t);
-    setId(String(n));
-    setPayload(text||ascii||"—");
-    setDecodedHex(hex||"—");
+    try{text=new TextDecoder("utf-8",{fatal:true}).decode(new Uint8Array(bytes));}
+    catch{text=bytes.map(b=>b>=32&&b<=126?String.fromCharCode(b):"·").join("")||"復元エラー";}
+    setFound(true);setScore(Math.round(corners.reduce((s,m)=>s+m.score,0)/4*100));
+    setType(t);setId(String(n));setPayload(text||"—");
+    setGeometry("4点検出 → 透視補正 → 24×24デコード");
     raf.current=requestAnimationFrame(scan);
   };
 
   const start=async()=>{
     try{
-      setError("");tick.current=0;
-      const stream=await navigator.mediaDevices.getUserMedia({
-        video:{facingMode:{ideal:"environment"},width:{ideal:1280},height:{ideal:720}},
-        audio:false
-      });
+      setError("");
+      const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"},width:{ideal:1280},height:{ideal:720}},audio:false});
       if(!videoRef.current)return;
-      videoRef.current.srcObject=stream;await videoRef.current.play();
-      setRunning(true);raf.current=requestAnimationFrame(scan);
-    }catch(e){
-      setError(e instanceof Error?e.message:"カメラを起動できませんでした。");
-    }
+      videoRef.current.srcObject=stream;await videoRef.current.play();setRunning(true);raf.current=requestAnimationFrame(scan);
+    }catch(e){setError(e instanceof Error?e.message:"カメラを起動できませんでした。");}
   };
-
   useEffect(()=>()=>stop(),[]);
 
   return <div className="optical-panel">
     <div className="mode-label">光通信フレーム受信</div>
-    <h2>カメラで通信パターンを探す</h2>
-    <p className="hint">送信側iPadの24×24フレームを背面カメラで読み取り、フレーム番号とデータを復元します。</p>
+    <h2>マーカーから通信領域を探す</h2>
+    <p className="hint">これまでのマーカー認識 → 四隅検出 → 透視補正の技術を、そのまま通信フレームの入口に使います。</p>
     <div className="camera-wrap"><video ref={videoRef} muted playsInline/><div className="scan-hud"><span>{found?"FRAME FOUND":"SEARCHING..."}</span></div></div>
     <canvas ref={canvasRef} className="hidden-canvas"/>
+    <canvas ref={warpRef} className="hidden-canvas"/>
     {!running?<button className="primary" onClick={start}>背面カメラを起動</button>:<button className="secondary" onClick={stop}>カメラを停止</button>}
-    <div className={found?"receive-result success":"receive-result"}><span>{found?"通信フレームを検出":"通信フレーム検出待ち"}</span><strong>{found?"FOUND":"—"}</strong></div>
+    <div className={found?"receive-result success":"receive-result"}><span>{found?"通信領域を取得":"通信領域を探索中"}</span><strong>{found?"FOUND":"—"}</strong></div>
     <div className="debug-panel">
-      <div className="debug-title">検出スコア</div><div className="debug-info">{score}%</div>
+      <div className="debug-title">マーカー検出</div><div className="debug-info">{score}%</div>
       <div className="debug-title">種別 / FRAME</div><div className="debug-info">{type} / {id}</div>
       <div className="debug-title">復元データ</div><div className="debug-info">{payload}</div>
-      <div className="debug-title">復元バイト</div><div className="debug-info">{decodedHex}</div>
+      <div className="debug-title">処理</div><div className="debug-info">{geometry}</div>
     </div>
     {error&&<div className="error">{error}</div>}
   </div>;
