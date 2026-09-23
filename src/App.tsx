@@ -1185,19 +1185,32 @@ function CommunicationReceiver() {
     canvas.width=S;canvas.height=S;
     const ctx=canvas.getContext("2d",{willReadFrequently:true});
     if(!ctx){raf.current=requestAnimationFrame(scan);return;}
+
     const side=Math.min(v.videoWidth,v.videoHeight);
     ctx.drawImage(v,(v.videoWidth-side)/2,(v.videoHeight-side)/2,side,side,0,0,S,S);
     const img=ctx.getImageData(0,0,S,S).data;
-    const gray=new Uint8Array(G*G);let min=255,max=0;
+    const gray=new Uint8Array(G*G);
+    let min=255,max=0;
+
+    // Use the real fractional cell boundaries (320 / 48) instead of
+    // assuming every cell is exactly 7 pixels wide. This prevents a
+    // systematic sampling shift that can corrupt decoded bytes.
     for(let y=0;y<G;y++)for(let x=0;x<G;x++){
-      let t=0;
-      for(let yy=0;yy<Math.ceil(S/G);yy++)for(let xx=0;xx<Math.ceil(S/G);xx++){
-        const p=((y*7+yy)*S+x*7+xx)*4;
-        if(p<img.length)t+=(img[p]+img[p+1]+img[p+2])/3;
+      const x0=Math.floor(x*S/G), x1=Math.min(S,Math.ceil((x+1)*S/G));
+      const y0=Math.floor(y*S/G), y1=Math.min(S,Math.ceil((y+1)*S/G));
+      let total=0,count=0;
+      for(let yy=y0;yy<y1;yy++)for(let xx=x0;xx<x1;xx++){
+        const p=(yy*S+xx)*4;
+        total+=(img[p]+img[p+1]+img[p+2])/3;
+        count++;
       }
-      const val=t/49;gray[y*G+x]=val;min=Math.min(min,val);max=Math.max(max,val);
+      const val=count?total/count:255;
+      gray[y*G+x]=val;
+      min=Math.min(min,val);max=Math.max(max,val);
     }
-    const th=min+(max-min)*.48,dark=gray.map(v=>v<th?1:0);
+
+    const th=min+(max-min)*.48;
+    const dark=gray.map(v=>v<th?1:0);
 
     const anchors:[number,number][]=[];
     for(const [r0,c0] of FRAME_ANCHORS)for(let y=0;y<3;y++)for(let x=0;x<3;x++)
@@ -1229,22 +1242,37 @@ function CommunicationReceiver() {
     }
 
     const h = [
-      sample[4 * 24 + 9], sample[4 * 24 + 10], sample[4 * 24 + 11],
-      sample[5 * 24 + 9], sample[5 * 24 + 10], sample[5 * 24 + 11],
-      sample[4 * 24 + 12], sample[4 * 24 + 13], sample[4 * 24 + 14],
-      sample[4 * 24 + 15], sample[4 * 24 + 16], sample[4 * 24 + 17],
-      sample[4 * 24 + 18], sample[4 * 24 + 19],
+      sample[4*24+9], sample[4*24+10], sample[4*24+11],
+      sample[5*24+9], sample[5*24+10], sample[5*24+11],
+      sample[4*24+12], sample[4*24+13], sample[4*24+14],
+      sample[4*24+15], sample[4*24+16], sample[4*24+17],
+      sample[4*24+18], sample[4*24+19],
     ];
-    const t=h[0]?"STATUS":h[1]?"TICKET":"UNKNOWN";
+
+    const t=h[0]&&!h[1]?"STATUS":!h[0]&&h[1]?"TICKET":"UNKNOWN";
     let n=0;for(let i=0;i<4;i++)n|=h[2+i]<<i;
-    let len=0;for(let i=0;i<8;i++)len|=h[6+i]<<i;len=Math.min(12,len);
+    let len=0;for(let i=0;i<8;i++)len|=h[6+i]<<i;
+    len=Math.min(12,len);
 
     const bits:number[]=[];
     for(let row=7;row<=16;row++)for(let col=7;col<=16;col++)bits.push(sample[row*24+col]);
+
     const bytes:number[]=[];
-    for(let i=0;i<len;i++){let b=0;for(let k=0;k<8;k++)b=(b<<1)|(bits[i*8+k]??0);bytes.push(b);}
+    for(let i=0;i<len;i++){
+      let b=0;
+      for(let k=0;k<8;k++)b=(b<<1)|(bits[i*8+k]??0);
+      bytes.push(b);
+    }
+
+    // Keep the payload decoder UTF-8 aware, but surface invalid byte
+    // sequences instead of displaying replacement characters as if they
+    // were valid data.
     let text="";
-    try{text=new TextDecoder().decode(new Uint8Array(bytes));}catch{text="デコード失敗";}
+    try{
+      text=new TextDecoder("utf-8",{fatal:true}).decode(new Uint8Array(bytes));
+    }catch{
+      text="復元エラー（データ再取得待ち）";
+    }
 
     setFound(true);setType(t);setId(String(n));setPayload(text||"—");
     raf.current=requestAnimationFrame(scan);
@@ -1253,12 +1281,18 @@ function CommunicationReceiver() {
   const start=async()=>{
     try{
       setError("");tick.current=0;
-      const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"},width:{ideal:1280},height:{ideal:720}},audio:false});
+      const stream=await navigator.mediaDevices.getUserMedia({
+        video:{facingMode:{ideal:"environment"},width:{ideal:1280},height:{ideal:720}},
+        audio:false
+      });
       if(!videoRef.current)return;
       videoRef.current.srcObject=stream;await videoRef.current.play();
       setRunning(true);raf.current=requestAnimationFrame(scan);
-    }catch(e){setError(e instanceof Error?e.message:"カメラを起動できませんでした。");}
+    }catch(e){
+      setError(e instanceof Error?e.message:"カメラを起動できませんでした。");
+    }
   };
+
   useEffect(()=>()=>stop(),[]);
 
   return <div className="optical-panel">
