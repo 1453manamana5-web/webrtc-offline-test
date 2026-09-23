@@ -1022,8 +1022,18 @@ function makeCommunicationFrame(frame: typeof TEST_FRAMES[number]) {
     Array.from({ length: FRAME_SIZE }, () => 0),
   );
 
-  // Distributed discovery anchors. They are intentionally separated so
-  // partial occlusion does not remove all geometry at once.
+  // Temporary calibration border. This gives the receiver a deterministic
+  // frame boundary; the distributed anchors remain inside it for the later
+  // occlusion-tolerant protocol.
+  for (let i = 0; i < FRAME_SIZE; i++) {
+    cells[0][i] = 1;
+    cells[FRAME_SIZE - 1][i] = 1;
+    cells[i][0] = 1;
+    cells[i][FRAME_SIZE - 1] = 1;
+  }
+
+  // Distributed discovery anchors remain separated so the final protocol
+  // can fall back to partial-frame discovery after the calibration test.
   for (const [row, col] of FRAME_ANCHORS) {
     for (let y = 0; y < 3; y++) {
       for (let x = 0; x < 3; x++) {
@@ -1108,7 +1118,7 @@ function CommunicationFrame() {
   useEffect(() => {
     const timer = window.setInterval(() => {
       setFrameIndex((current) => (current + 1) % TEST_FRAMES.length);
-    }, 900);
+    }, 1800);
     return () => window.clearInterval(timer);
   }, []);
 
@@ -1218,37 +1228,48 @@ function CommunicationReceiver() {
     const th=min+(max-min)*.48;
     const dark=gray.map(v=>v<th?1:0);
 
-    const anchors:[number,number][]=[];
-    for(const [r0,c0] of FRAME_ANCHORS)for(let y=0;y<3;y++)for(let x=0;x<3;x++)
-      if(y===0||y===2||x===0||x===2)anchors.push([r0+y,c0+x]);
+    // Calibration mode: locate the complete 24x24 frame from its outer
+    // border first. Unlike the old anchor search, this does not depend on
+    // a payload bit landing at exactly the right pixel.
+    const borderCells:number[][]=[];
+    for(let i=0;i<FRAME_SIZE;i++){
+      borderCells.push([0,i]);
+      borderCells.push([FRAME_SIZE-1,i]);
+      borderCells.push([i,0]);
+      borderCells.push([i,FRAME_SIZE-1]);
+    }
 
     let best=0,bx=0,by=0,bs=0;
-    for(let size=16;size<=42;size+=2)for(let y=0;y<=G-size;y+=2)for(let x=0;x<=G-size;x+=2){
-      let m=0;
-      for(const [rr,cc] of anchors){
-        const px=Math.min(G-1,Math.max(0,Math.floor(x+(cc+.5)/FRAME_SIZE*size)));
-        const py=Math.min(G-1,Math.max(0,Math.floor(y+(rr+.5)/FRAME_SIZE*size)));
-        if(dark[py*G+px])m++;
+    for(let size=18;size<=48;size+=1){
+      for(let y=0;y<=G-size;y+=1){
+        for(let x=0;x<=G-size;x+=1){
+          let darkCount=0;
+          for(const [rr,cc] of borderCells){
+            const px=Math.min(G-1,Math.max(0,Math.floor(x+(cc+.5)/FRAME_SIZE*size)));
+            const py=Math.min(G-1,Math.max(0,Math.floor(y+(rr+.5)/FRAME_SIZE*size)));
+            if(dark[py*G+px]) darkCount++;
+          }
+          const s=darkCount/borderCells.length;
+          if(s>best){best=s;bx=x;by=y;bs=size;}
+        }
       }
-      const s=m/anchors.length;
-      if(s>best){best=s;bx=x;by=y;bs=size;}
     }
 
     setScore(Math.round(best*100));
-    if(best<.78){
+    if(best<.72){
       setFound(false);setType("—");setId("—");setPayload("—");
       raf.current=requestAnimationFrame(scan);return;
     }
 
-    // Refine the frame geometry on the original 320×320 image.
-    // The 48×48 search is intentionally coarse; using its quantized
-    // position directly can shift a 24×24 cell by several pixels.
+    // Refine the border geometry on the original 320×320 image.
+    // The coarse search only supplies a starting point; the final decoder
+    // uses the highest-resolution image for every 24x24 cell.
     const roughX=bx*S/G;
     const roughY=by*S/G;
     const roughSize=bs*S/G;
-    const anchorScoreAt=(x:number,y:number,size:number)=>{
+    const borderScoreAt=(x:number,y:number,size:number)=>{
       let m=0;
-      for(const [rr,cc] of anchors){
+      for(const [rr,cc] of borderCells){
         const cx=x+(cc+.5)/FRAME_SIZE*size;
         const cy=y+(rr+.5)/FRAME_SIZE*size;
         let total=0,count=0;
@@ -1261,7 +1282,7 @@ function CommunicationReceiver() {
         }
         if((total/count)<th)m++;
       }
-      return m/anchors.length;
+      return m/borderCells.length;
     };
 
     let refinedX=roughX, refinedY=roughY, refinedSize=roughSize;
@@ -1270,7 +1291,7 @@ function CommunicationReceiver() {
       if(size<80||size>300)continue;
       for(let y=Math.max(0,roughY-10);y<=Math.min(S-size,roughY+10);y+=1){
         for(let x=Math.max(0,roughX-10);x<=Math.min(S-size,roughX+10);x+=1){
-          const s=anchorScoreAt(x,y,size);
+          const s=borderScoreAt(x,y,size);
           if(s>refinedScore){
             refinedScore=s;refinedX=x;refinedY=y;refinedSize=size;
           }
@@ -1348,7 +1369,12 @@ function CommunicationReceiver() {
     }
 
     const hex=bytes.map(b=>b.toString(16).padStart(2,"0")).join(" ");
-    setFound(true);setType(t);setId(String(n));setPayload(text||"—");setDecodedHex(hex||"—");
+    const ascii=bytes.map(b=>b>=32&&b<=126?String.fromCharCode(b):"·").join("");
+    setFound(true);
+    setType(t);
+    setId(String(n));
+    setPayload(text||ascii||"—");
+    setDecodedHex(hex||"—");
     raf.current=requestAnimationFrame(scan);
   };
 
