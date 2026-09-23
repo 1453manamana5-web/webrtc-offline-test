@@ -1165,6 +1165,7 @@ function CommunicationReceiver() {
   const [type,setType]=useState("—");
   const [id,setId]=useState("—");
   const [payload,setPayload]=useState("—");
+  const [decodedHex,setDecodedHex]=useState("—");
   const [error,setError]=useState("");
 
   const stop=()=>{
@@ -1172,7 +1173,7 @@ function CommunicationReceiver() {
     raf.current=null;
     const v=videoRef.current;
     if(v?.srcObject instanceof MediaStream){v.srcObject.getTracks().forEach(t=>t.stop());v.srcObject=null;}
-    setRunning(false);setFound(false);setScore(0);setType("—");setId("—");setPayload("—");
+    setRunning(false);setFound(false);setScore(0);setType("—");setId("—");setPayload("—");setDecodedHex("—");
   };
 
   const scan=()=>{
@@ -1327,7 +1328,7 @@ function CommunicationReceiver() {
     }
 
     const hex=bytes.map(b=>b.toString(16).padStart(2,"0")).join(" ");
-    setFound(true);setType(t);setId(String(n));setPayload(text||"—");
+    setFound(true);setType(t);setId(String(n));setPayload(text||"—");setDecodedHex(hex||"—");
     raf.current=requestAnimationFrame(scan);
   };
 
@@ -1360,7 +1361,7 @@ function CommunicationReceiver() {
       <div className="debug-title">検出スコア</div><div className="debug-info">{score}%</div>
       <div className="debug-title">種別 / FRAME</div><div className="debug-info">{type} / {id}</div>
       <div className="debug-title">復元データ</div><div className="debug-info">{payload}</div>
-      <div className="debug-title">復元バイト</div><div className="debug-info">{hex}</div>
+      <div className="debug-title">復元バイト</div><div className="debug-info">{decodedHex}</div>
     </div>
     {error&&<div className="error">{error}</div>}
   </div>;
