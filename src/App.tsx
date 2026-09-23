@@ -1052,16 +1052,16 @@ function makeCommunicationFrame(frame: typeof TEST_FRAMES[number]) {
     ...Array.from({ length: 8 }, (_, i) => (payloadLength >> i) & 1),
   ];
 
-  const headerCells = [
-    [4, 9], [4, 10], [4, 11],
-    [5, 9], [5, 10], [5, 11],
-    [4, 12], [4, 13], [4, 14], [4, 15],
-    [4, 16], [4, 17], [4, 18], [4, 19],
-  ];
-
+  // Duplicate each header bit into a 2x2 block. This makes the
+  // protocol much more tolerant of camera blur and small geometric errors.
   header.forEach((bit, i) => {
-    const [row, col] = headerCells[i];
-    cells[row][col] = bit;
+    const row = 4 + Math.floor(i / 7) * 2;
+    const col = 7 + (i % 7) * 2;
+    for (let dy = 0; dy < 2; dy++) {
+      for (let dx = 0; dx < 2; dx++) {
+        cells[row + dy][col + dx] = bit;
+      }
+    }
   });
 
   // Payload is repeated into separated blocks. This is only a visual
@@ -1074,22 +1074,27 @@ function makeCommunicationFrame(frame: typeof TEST_FRAMES[number]) {
     }
   }
 
-  const dataPositions: [number, number][] = [];
-  for (let row = 7; row <= 16; row++) {
-    for (let col = 7; col <= 16; col++) {
-      dataPositions.push([row, col]);
+  // Encode each payload bit as a 2x2 block. The receiver uses a
+  // majority vote, so one blurred/partially covered cell does not
+  // immediately corrupt a byte.
+  for (let i = 0; i < 96; i++) {
+    const bit = dataBits[i] ?? 0;
+    const bitRow = Math.floor(i / 8);
+    const bitCol = i % 8;
+    const row = 8 + bitRow;
+    const col = 6 + bitCol * 2;
+    for (let dy = 0; dy < 1; dy++) {
+      for (let dx = 0; dx < 2; dx++) {
+        cells[row + dy][col + dx] = bit;
+      }
     }
   }
 
-  for (let i = 0; i < dataPositions.length; i++) {
-    const [row, col] = dataPositions[i];
-    cells[row][col] = dataBits[i % dataBits.length] ?? 0;
-  }
-
-  // Small repeated parity-like samples around the data area.
+  // Repeat each byte's first bit in a small secondary strip. It is
+  // reserved for future error correction and is not used for decoding yet.
   for (let i = 0; i < 12; i++) {
-    const bit = dataBits[(i * 13) % dataBits.length] ?? 0;
-    cells[7 + (i % 6)][18 + Math.floor(i / 6)] = bit;
+    const bit = dataBits[i * 8] ?? 0;
+    cells[20][6 + i] = bit;
   }
 
   return cells;
@@ -1294,13 +1299,20 @@ function CommunicationReceiver() {
       sample.push((total/count)<th?1:0);
     }
 
-    const h = [
-      sample[4*24+9], sample[4*24+10], sample[4*24+11],
-      sample[5*24+9], sample[5*24+10], sample[5*24+11],
-      sample[4*24+12], sample[4*24+13], sample[4*24+14],
-      sample[4*24+15], sample[4*24+16], sample[4*24+17],
-      sample[4*24+18], sample[4*24+19],
-    ];
+    const readBlockBit=(row:number,col:number)=>{
+      let darkCount=0;
+      for(let dy=0;dy<2;dy++)for(let dx=0;dx<2;dx++){
+        if(sample[(row+dy)*24+(col+dx)])darkCount++;
+      }
+      return darkCount>=2?1:0;
+    };
+
+    const h:number[]=[];
+    for(let i=0;i<14;i++){
+      const row=4+Math.floor(i/7)*2;
+      const col=7+(i%7)*2;
+      h.push(readBlockBit(row,col));
+    }
 
     const t=h[0]&&!h[1]?"STATUS":!h[0]&&h[1]?"TICKET":"UNKNOWN";
     let n=0;for(let i=0;i<4;i++)n|=h[2+i]<<i;
@@ -1308,7 +1320,15 @@ function CommunicationReceiver() {
     len=Math.min(12,len);
 
     const bits:number[]=[];
-    for(let row=7;row<=16;row++)for(let col=7;col<=16;col++)bits.push(sample[row*24+col]);
+    for(let i=0;i<96;i++){
+      const row=8+Math.floor(i/8);
+      const col=6+(i%8)*2;
+      let darkCount=0;
+      for(let dx=0;dx<2;dx++){
+        if(sample[row*24+col+dx])darkCount++;
+      }
+      bits.push(darkCount>=1?1:0);
+    }
 
     const bytes:number[]=[];
     for(let i=0;i<len;i++){
