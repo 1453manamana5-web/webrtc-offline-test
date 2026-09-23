@@ -1234,14 +1234,48 @@ function CommunicationReceiver() {
       raf.current=requestAnimationFrame(scan);return;
     }
 
-    // Re-sample the detected frame from the original 320×320 image.
-    // The 48×48 detection image is only for locating the frame; using it
-    // directly for payload bits loses information because one optical cell
-    // is only about two pixels wide there.
+    // Refine the frame geometry on the original 320×320 image.
+    // The 48×48 search is intentionally coarse; using its quantized
+    // position directly can shift a 24×24 cell by several pixels.
+    const roughX=bx*S/G;
+    const roughY=by*S/G;
+    const roughSize=bs*S/G;
+    const anchorScoreAt=(x:number,y:number,size:number)=>{
+      let m=0;
+      for(const [rr,cc] of anchors){
+        const cx=x+(cc+.5)/FRAME_SIZE*size;
+        const cy=y+(rr+.5)/FRAME_SIZE*size;
+        let total=0,count=0;
+        for(let yy=-1;yy<=1;yy++)for(let xx=-1;xx<=1;xx++){
+          const px=Math.min(S-1,Math.max(0,Math.round(cx+xx)));
+          const py=Math.min(S-1,Math.max(0,Math.round(cy+yy)));
+          const p=(py*S+px)*4;
+          total+=(img[p]+img[p+1]+img[p+2])/3;
+          count++;
+        }
+        if((total/count)<th)m++;
+      }
+      return m/anchors.length;
+    };
+
+    let refinedX=roughX, refinedY=roughY, refinedSize=roughSize;
+    let refinedScore=0;
+    for(let size=roughSize-10;size<=roughSize+10;size+=1){
+      if(size<80||size>300)continue;
+      for(let y=Math.max(0,roughY-10);y<=Math.min(S-size,roughY+10);y+=1){
+        for(let x=Math.max(0,roughX-10);x<=Math.min(S-size,roughX+10);x+=1){
+          const s=anchorScoreAt(x,y,size);
+          if(s>refinedScore){
+            refinedScore=s;refinedX=x;refinedY=y;refinedSize=size;
+          }
+        }
+      }
+    }
+
     const sample:number[]=[];
-    const frameX=bx*S/G;
-    const frameY=by*S/G;
-    const frameSize=bs*S/G;
+    const frameX=refinedX;
+    const frameY=refinedY;
+    const frameSize=refinedSize;
     const cellSize=frameSize/FRAME_SIZE;
 
     for(let row=0;row<FRAME_SIZE;row++)for(let col=0;col<FRAME_SIZE;col++){
@@ -1292,6 +1326,7 @@ function CommunicationReceiver() {
       text="復元エラー（データ再取得待ち）";
     }
 
+    const hex=bytes.map(b=>b.toString(16).padStart(2,"0")).join(" ");
     setFound(true);setType(t);setId(String(n));setPayload(text||"—");
     raf.current=requestAnimationFrame(scan);
   };
@@ -1325,6 +1360,7 @@ function CommunicationReceiver() {
       <div className="debug-title">検出スコア</div><div className="debug-info">{score}%</div>
       <div className="debug-title">種別 / FRAME</div><div className="debug-info">{type} / {id}</div>
       <div className="debug-title">復元データ</div><div className="debug-info">{payload}</div>
+      <div className="debug-title">復元バイト</div><div className="debug-info">{hex}</div>
     </div>
     {error&&<div className="error">{error}</div>}
   </div>;
