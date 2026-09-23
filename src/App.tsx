@@ -1234,11 +1234,29 @@ function CommunicationReceiver() {
       raf.current=requestAnimationFrame(scan);return;
     }
 
+    // Re-sample the detected frame from the original 320×320 image.
+    // The 48×48 detection image is only for locating the frame; using it
+    // directly for payload bits loses information because one optical cell
+    // is only about two pixels wide there.
     const sample:number[]=[];
+    const frameX=bx*S/G;
+    const frameY=by*S/G;
+    const frameSize=bs*S/G;
+    const cellSize=frameSize/FRAME_SIZE;
+
     for(let row=0;row<FRAME_SIZE;row++)for(let col=0;col<FRAME_SIZE;col++){
-      const px=Math.min(G-1,Math.max(0,Math.floor(bx+(col+.5)/FRAME_SIZE*bs)));
-      const py=Math.min(G-1,Math.max(0,Math.floor(by+(row+.5)/FRAME_SIZE*bs)));
-      sample.push(dark[py*G+px]);
+      const cx=frameX+(col+0.5)*cellSize;
+      const cy=frameY+(row+0.5)*cellSize;
+      const radius=Math.max(1,Math.floor(cellSize*0.22));
+      let total=0,count=0;
+      for(let yy=-radius;yy<=radius;yy++)for(let xx=-radius;xx<=radius;xx++){
+        const px=Math.min(S-1,Math.max(0,Math.round(cx+xx)));
+        const py=Math.min(S-1,Math.max(0,Math.round(cy+yy)));
+        const p=(py*S+px)*4;
+        total+=(img[p]+img[p+1]+img[p+2])/3;
+        count++;
+      }
+      sample.push((total/count)<th?1:0);
     }
 
     const h = [
