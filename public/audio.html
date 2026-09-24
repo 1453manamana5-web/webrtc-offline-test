@@ -27,8 +27,33 @@ label{display:block;font-size:13px;margin:12px 0 6px;opacity:.8}.pill{display:in
 <section class="card"><h2>② 受信側</h2><p class="hint">別のiPadでマイクを許可して受信を開始します。送信側の近くに置いてください。</p>
 <div class="row"><button class="primary" id="receive">マイク受信を開始</button><button class="secondary" id="stopReceive">停止</button></div><div class="status" id="receiveStatus">待機中</div><div class="small" id="rxProtocolStatus">方式: 従来FSK</div><div class="meter"><i id="level"></i></div><div class="small" id="freqReadout">検出周波数: —</div><div class="small" id="symbolReadout">判定シンボル: —</div><div class="result" id="result">—</div><div class="debug" id="decodeDebug">デコーダ: 待機中</div></section>
 <section class="card"><h2>③ 端末チェック</h2><p class="hint">このテストでは「本当に高周波を送受信できるか」を確認することも重要です。</p><div class="row"><button class="primary" id="tone">テスト音を1秒出す</button></div><div class="status" id="toneStatus">周波数: —</div><p class="footer">※「人間には聞こえない」とは端末や年齢によって保証できません。大音量にはせず、最初は短時間で試してください。</p></section>
+
+<section class="card">
+<h2>⑤ ggwave 実験</h2>
+<p class="hint">ここからは自作FSKではなく、ggwaveの実装を使ったData Over Soundを試します。送信側と受信側で同じプロトコルを選んでください。</p>
+<label for="ggwaveProtocol">ggwaveプロトコル</label>
+<select id="ggwaveProtocol" style="width:100%;padding:12px;border-radius:12px;background:#081321;color:#fff;border:1px solid #344862;font:inherit">
+<option value="0">通常 / Normal</option>
+<option value="1" selected>通常 / Fast</option>
+<option value="2">通常 / Fastest</option>
+<option value="3">超音波 / Normal</option>
+<option value="4">超音波 / Fast</option>
+<option value="5">超音波 / Fastest</option>
+</select>
+<div class="row">
+<button class="primary" id="ggwaveSend">ggwave送信</button>
+<button class="primary" id="ggwaveReceive">ggwave受信開始</button>
+<button class="secondary" id="ggwaveStop">停止</button>
+</div>
+<div class="status" id="ggwaveStatus">ggwave: 初期化待ち</div>
+<div class="result" id="ggwaveResult">—</div>
+<div class="small" id="ggwaveDebug">WASMモジュールを読み込み中…</div>
+</section>
+
 <section class="card"><h2>現在の実験仕様</h2><p><span class="pill">FSK</span><span class="pill">8 bit</span><span class="pill">短文</span><span class="pill">近距離</span></p><div class="status"><div>PREAMBLE → DATA LENGTH → PAYLOAD → END</div><div class="small" style="margin-top:7px">24シンボルの交互プリアンブルで同期し、その直後の長さ情報とUTF-8データを復元します。</div></div></section>
 </div></main>
+
+<script src="./ggwave.js"></script>
 <script>
 const $=id=>document.getElementById(id);
 let txCtx=null,osc=null,gain=null,rxCtx=null,analyser=null,stream=null,rxTimer=null;
@@ -406,5 +431,152 @@ function dos2Decode(symbols){
   }
   return null;
 }
+
+
+/* ggwave experiment
+   Based on the official ggwave JavaScript/Web Audio example.
+   The library itself is MIT licensed. */
+let ggwaveModule=null, ggwaveInstance=null, ggwaveAudioCtx=null;
+let ggwaveMediaStream=null, ggwaveMediaSource=null, ggwaveProcessor=null, ggwaveMute=null;
+
+function setGgwaveStatus(msg,ok=false){
+  setStatus("ggwaveStatus",msg,ok);
+}
+
+function ggwaveProtocolId(){
+  return Number($("ggwaveProtocol").value);
+}
+
+async function initGgwave(){
+  if(ggwaveModule && ggwaveInstance!==null) return;
+  if(typeof ggwave_factory!=="function"){
+    throw new Error("ggwave.jsを読み込めませんでした");
+  }
+
+  ggwaveModule=await ggwave_factory();
+
+  if(!ggwaveAudioCtx){
+    ggwaveAudioCtx=new(window.AudioContext||window.webkitAudioContext)({sampleRate:48000});
+  }
+  if(ggwaveAudioCtx.state==="suspended") await ggwaveAudioCtx.resume();
+
+  const p=ggwaveModule.getDefaultParameters();
+  p.sampleRateInp=ggwaveAudioCtx.sampleRate;
+  p.sampleRateOut=ggwaveAudioCtx.sampleRate;
+  ggwaveInstance=ggwaveModule.init(p);
+
+  $("ggwaveDebug").textContent="ggwave準備完了 / sample rate: "+ggwaveAudioCtx.sampleRate+" Hz";
+  setGgwaveStatus("ggwave: 準備完了",true);
+}
+
+function ggwaveConvertTypedArray(src,type){
+  const buffer=new ArrayBuffer(src.byteLength);
+  new src.constructor(buffer).set(src);
+  return new type(buffer);
+}
+
+async function stopGgwaveCapture(){
+  if(ggwaveProcessor){
+    try{ggwaveProcessor.disconnect()}catch{}
+    ggwaveProcessor=null;
+  }
+  if(ggwaveMute){
+    try{ggwaveMute.disconnect()}catch{}
+    ggwaveMute=null;
+  }
+  if(ggwaveMediaSource){
+    try{ggwaveMediaSource.disconnect()}catch{}
+    ggwaveMediaSource=null;
+  }
+  if(ggwaveMediaStream){
+    ggwaveMediaStream.getTracks().forEach(t=>t.stop());
+    ggwaveMediaStream=null;
+  }
+}
+
+async function ggwaveSend(){
+  try{
+    await initGgwave();
+    await stopGgwaveCapture();
+
+    const text=$( "message" ).value.slice(0,140);
+    const protocol=ggwaveProtocolId();
+    const volume=10;
+    const waveform=ggwaveModule.encode(ggwaveInstance,text,protocol,volume);
+
+    const buf=ggwaveConvertTypedArray(waveform,Float32Array);
+    const audioBuffer=ggwaveAudioCtx.createBuffer(1,buf.length,ggwaveAudioCtx.sampleRate);
+    audioBuffer.getChannelData(0).set(buf);
+
+    const source=ggwaveAudioCtx.createBufferSource();
+    source.buffer=audioBuffer;
+    source.connect(ggwaveAudioCtx.destination);
+    source.onended=()=>setGgwaveStatus("ggwave: 送信完了",true);
+    source.start();
+
+    const protocolNames=["Normal","Fast","Fastest","Ultrasound Normal","Ultrasound Fast","Ultrasound Fastest"];
+    setGgwaveStatus("ggwave: 送信中… / "+protocolNames[protocol]);
+    $("ggwaveDebug").textContent="送信データ: "+text+" / "+waveform.length+" samples";
+    $("ggwaveResult").textContent="—";
+  }catch(e){
+    setGgwaveStatus("ggwave送信失敗: "+(e.message||e));
+  }
+}
+
+async function ggwaveReceive(){
+  try{
+    await initGgwave();
+    await stopGgwaveCapture();
+
+    const stream=await navigator.mediaDevices.getUserMedia({
+      audio:{
+        echoCancellation:false,
+        autoGainControl:false,
+        noiseSuppression:false
+      }
+    });
+    ggwaveMediaStream=stream;
+    ggwaveMediaSource=ggwaveAudioCtx.createMediaStreamSource(stream);
+
+    const bufferSize=1024;
+    ggwaveProcessor=ggwaveAudioCtx.createScriptProcessor(bufferSize,1,1);
+
+    /* Keep ScriptProcessor alive without sending microphone audio to the speaker. */
+    ggwaveMute=ggwaveAudioCtx.createGain();
+    ggwaveMute.gain.value=0;
+
+    ggwaveProcessor.onaudioprocess=(e)=>{
+      if(!ggwaveModule || ggwaveInstance===null) return;
+      const input=e.inputBuffer.getChannelData(0);
+      const pcm=ggwaveConvertTypedArray(new Float32Array(input),Int8Array);
+      const result=ggwaveModule.decode(ggwaveInstance,pcm);
+
+      if(result && result.length>0){
+        const text=new TextDecoder("utf-8").decode(result);
+        $("ggwaveResult").textContent=text;
+        setGgwaveStatus("ggwave: データを受信しました",true);
+        $("ggwaveDebug").textContent="受信成功 / "+result.length+" bytes";
+      }
+    };
+
+    ggwaveMediaSource.connect(ggwaveProcessor);
+    ggwaveProcessor.connect(ggwaveMute);
+    ggwaveMute.connect(ggwaveAudioCtx.destination);
+
+    setGgwaveStatus("ggwave: 受信中… マイクで音を待っています");
+    $("ggwaveDebug").textContent="受信待機 / sample rate: "+ggwaveAudioCtx.sampleRate+" Hz";
+    $("ggwaveResult").textContent="Listening…";
+  }catch(e){
+    setGgwaveStatus("ggwave受信失敗: "+(e.message||e));
+  }
+}
+
+$("ggwaveSend").onclick=ggwaveSend;
+$("ggwaveReceive").onclick=ggwaveReceive;
+$("ggwaveStop").onclick=async()=>{
+  await stopGgwaveCapture();
+  setGgwaveStatus("ggwave: 停止");
+  $("ggwaveResult").textContent="—";
+};
 
 </script></body></html>
