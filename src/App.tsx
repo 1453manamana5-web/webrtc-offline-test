@@ -986,6 +986,7 @@ function ObliqueTestReceiver() {
 
 const FRAME_SIZE = 40;
 const DATA_SIZE = 24;
+
 const TEST_FRAMES = [
   { type: "STATUS", id: 1, payload: "ENTRY-A|62|4" },
   { type: "TICKET", id: 2, payload: "A00123|E|175852" },
@@ -1015,18 +1016,12 @@ function makeCommunicationFrame(frame: typeof TEST_FRAMES[number]) {
   const dataBits:number[]=[];
   for(const byte of bytes) for(let bit=7;bit>=0;bit--) dataBits.push((byte>>bit)&1);
 
-  // 24x24 data region. Each bit is repeated horizontally and vertically
-  // in 2x2 blocks. The first 12 bytes fit exactly in 6x16 blocks.
+  // 24x24 data region.
+  // Header uses rows 0..3. Payload uses rows 4..23.
+  // 15 bytes = 120 bits = 10x12 logical bits, with every bit repeated in a 2x2 block.
   const data=Array.from({length:DATA_SIZE},()=>Array(DATA_SIZE).fill(0));
-  for(let i=0;i<96;i++){
-    const bit=dataBits[i]??0;
-    const br=Math.floor(i/16), bc=(i%16)*1;
-    const row=4+br, col=4+bc;
-    data[row][col]=bit;
-  }
 
-  // Header is distributed in the first two data rows and repeated 2x2.
-  const len=Math.min(12,bytes.length);
+  const len=Math.min(15,bytes.length);
   const header=[
     frame.type==="STATUS"?1:0,
     frame.type==="TICKET"?1:0,
@@ -1034,21 +1029,21 @@ function makeCommunicationFrame(frame: typeof TEST_FRAMES[number]) {
     ...Array.from({length:8},(_,i)=>(len>>i)&1)
   ];
   for(let i=0;i<14;i++){
-    const row=0+Math.floor(i/7)*2;
+    const row=Math.floor(i/7)*2;
     const col=2+(i%7)*2;
     for(let dy=0;dy<2;dy++)for(let dx=0;dx<2;dx++)
       data[row+dy][col+dx]=header[i];
   }
 
-  // Payload begins lower down, one byte per row-pair. It is intentionally
-  // separated from the corner markers.
-  for(let i=0;i<96;i++){
+  for(let i=0;i<120;i++){
     const bit=dataBits[i]??0;
-    const row=6+Math.floor(i/16);
-    const col=4+(i%16);
-    data[row][col]=bit;
+    const logicalRow=Math.floor(i/12);
+    const logicalCol=i%12;
+    const row=4+logicalRow*2;
+    const col=logicalCol*2;
+    for(let dy=0;dy<2;dy++)for(let dx=0;dx<2;dx++)
+      data[row+dy][col+dx]=bit;
   }
-
   for(let r=0;r<DATA_SIZE;r++) for(let col=0;col<DATA_SIZE;col++)
     cells[8+r][8+col]=data[r][col];
 
@@ -1105,7 +1100,7 @@ function CommunicationFrame() {
       <div className="debug-panel">
         <div className="debug-title">現在の試作</div>
         <div className="debug-info">
-          発見領域 → 位置・向き → ヘッダー → データ → 冗長領域
+          4点マーカー → 位置合わせ → ヘッダー → 2×2冗長データ → 復元
         </div>
       </div>
     </div>
@@ -1194,5 +1189,220 @@ function CommunicationReceiver() {
         const py=Math.min(G-1,Math.floor(minY+((r+.5)/7)*bh));
         sample.push(dark[py*G+px]);
       }
-      let matches=0;
-      for(let i=0;i<49;i++)if(sample[i]===INNER[i])matches++;
+      let bestMarkerScore=0;
+      for(let rotation=0;rotation<4;rotation++){
+        let matches=0;
+        for(let r=0;r<7;r++)for(let col=0;col<7;col++){
+          let rr=r,cc=col;
+          for(let k=0;k<rotation;k++){
+            const nextR=cc;
+            const nextC=6-rr;
+            rr=nextR;
+            cc=nextC;
+          }
+          if(sample[r*7+col]===MARKER[rr][cc])matches++;
+        }
+        bestMarkerScore=Math.max(bestMarkerScore,matches/49);
+      }
+      if(bestMarkerScore>=.78) foundMarkers.push({
+        x:(minX+maxX+1)/2,
+        y:(minY+maxY+1)/2,
+        size:(bw+bh)/2,
+        score:bestMarkerScore
+      });;
+    }
+
+    // Deduplicate nearby detections.
+    const unique:{x:number,y:number,size:number,score:number}[]=[];
+    for(const m of foundMarkers){
+      if(unique.some(u=>Math.hypot(u.x-m.x,u.y-m.y)<m.size*.7))continue;
+      unique.push(m);
+    }
+
+    if(unique.length<4){
+      setFound(false);setScore(Math.round((unique.length/4)*100));setGeometry(`マーカー ${unique.length}/4`);
+      raf.current=requestAnimationFrame(scan);return;
+    }
+
+    // Pick four spatially distinct marker centers.
+    const cx=unique.reduce((s,m)=>s+m.x,0)/unique.length;
+    const cy=unique.reduce((s,m)=>s+m.y,0)/unique.length;
+    const corners=[
+      unique.filter(m=>m.x<=cx&&m.y<=cy).sort((a,b)=>b.score-a.score)[0],
+      unique.filter(m=>m.x>cx&&m.y<=cy).sort((a,b)=>b.score-a.score)[0],
+      unique.filter(m=>m.x>cx&&m.y>cy).sort((a,b)=>b.score-a.score)[0],
+      unique.filter(m=>m.x<=cx&&m.y>cy).sort((a,b)=>b.score-a.score)[0],
+    ];
+    if(corners.some(c=>!c)){
+      raf.current=requestAnimationFrame(scan);return;
+    }
+
+    const pts=corners.map(p=>({x:p.x*block,y:p.y*block}));
+    const [tl,tr,br,bl]=pts;
+
+    // Reuse the existing perspective-warp idea. The mapping is bilinear for
+    // this prototype; the next pass can replace it with a true homography.
+    const outputSize=320;
+    const out=wctx.createImageData(outputSize,outputSize);
+    const dst=out.data;
+    const src=img;
+    for(let oy=0;oy<outputSize;oy++)for(let ox=0;ox<outputSize;ox++){
+      const u=ox/(outputSize-1),vv=oy/(outputSize-1);
+      const topX=tl.x+(tr.x-tl.x)*u,topY=tl.y+(tr.y-tl.y)*u;
+      const botX=bl.x+(br.x-bl.x)*u,botY=bl.y+(br.y-bl.y)*u;
+      const sx=topX+(botX-topX)*vv,sy=topY+(botY-topY)*vv;
+      const px=Math.min(S-1,Math.max(0,Math.round(sx))),py=Math.min(S-1,Math.max(0,Math.round(sy)));
+      const sp=(py*S+px)*4,dp=(oy*outputSize+ox)*4;
+      dst[dp]=src[sp];dst[dp+1]=src[sp+1];dst[dp+2]=src[sp+2];dst[dp+3]=255;
+    }
+    wctx.putImageData(out,0,0);
+
+    // The four markers surround the 24x24 data area. Sample its center
+    // after perspective correction, just like the previous warp test.
+    const W=320, dataStart=8, dataSize=24, cell=W/40;
+    const sample:number[]=[];
+    let localMin=255,localMax=0;
+    for(let r=0;r<DATA_SIZE;r++)for(let col=0;col<DATA_SIZE;col++){
+      const cxp=(dataStart+col+.5)*cell, cyp=(dataStart+r+.5)*cell;
+      let total=0,count=0;
+      for(let yy=-1;yy<=1;yy++)for(let xx=-1;xx<=1;xx++){
+        const px=Math.min(W-1,Math.max(0,Math.round(cxp+xx))),py=Math.min(W-1,Math.max(0,Math.round(cyp+yy)));
+        const p=(py*W+px)*4,totalV=(out.data[p]+out.data[p+1]+out.data[p+2])/3;
+        total+=totalV;count++;localMin=Math.min(localMin,totalV);localMax=Math.max(localMax,totalV);
+      }
+      sample.push(total/count);
+    }
+    const localTh=localMin+(localMax-localMin)*.48;
+    const bit=(r:number,col:number)=>sample[r*DATA_SIZE+col]<localTh?1:0;
+
+    const h:number[]=[];
+    for(let i=0;i<14;i++){
+      const r=Math.floor(i/7)*2,c=2+(i%7)*2;
+      let d=0;
+      for(let dy=0;dy<2;dy++)for(let dx=0;dx<2;dx++)if(bit(r+dy,c+dx))d++;
+      h.push(d>=2?1:0);
+    }
+    const t=h[0]&&!h[1]?"STATUS":!h[0]&&h[1]?"TICKET":"UNKNOWN";
+    let n=0;for(let i=0;i<4;i++)n|=h[2+i]<<i;
+    let len=0;for(let i=0;i<8;i++)len|=h[6+i]<<i;
+    len=Math.min(15,len);
+
+    const bits:number[]=[];
+    for(let i=0;i<120;i++){
+      const logicalRow=Math.floor(i/12);
+      const logicalCol=i%12;
+      const row=4+logicalRow*2;
+      const col=logicalCol*2;
+      let d=0;
+      for(let dy=0;dy<2;dy++)for(let dx=0;dx<2;dx++)if(bit(row+dy,col+dx))d++;
+      bits.push(d>=2?1:0);
+    }
+    const bytes:number[]=[];
+    for(let i=0;i<len;i++){
+      let b=0;for(let k=0;k<8;k++)b=(b<<1)|(bits[i*8+k]??0);bytes.push(b);
+    }
+    let text="";
+    try{text=new TextDecoder("utf-8",{fatal:true}).decode(new Uint8Array(bytes));}
+    catch{text=bytes.map(b=>b>=32&&b<=126?String.fromCharCode(b):"·").join("")||"復元エラー";}
+    setFound(true);setScore(Math.round(corners.reduce((s,m)=>s+m.score,0)/4*100));
+    setType(t);setId(String(n));setPayload(text||"—");
+    setGeometry("4点検出 → 透視補正 → 24×24デコード");
+    raf.current=requestAnimationFrame(scan);
+  };
+
+  const start=async()=>{
+    try{
+      setError("");
+      const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"},width:{ideal:1280},height:{ideal:720}},audio:false});
+      if(!videoRef.current)return;
+      videoRef.current.srcObject=stream;await videoRef.current.play();setRunning(true);raf.current=requestAnimationFrame(scan);
+    }catch(e){setError(e instanceof Error?e.message:"カメラを起動できませんでした。");}
+  };
+  useEffect(()=>()=>stop(),[]);
+
+  return <div className="optical-panel">
+    <div className="mode-label">光通信フレーム受信</div>
+    <h2>マーカーから通信領域を探す</h2>
+    <p className="hint">これまでのマーカー認識 → 四隅検出 → 透視補正の技術を、そのまま通信フレームの入口に使います。</p>
+    <div className="camera-wrap"><video ref={videoRef} muted playsInline/><div className="scan-hud"><span>{found?"FRAME FOUND":"SEARCHING..."}</span></div></div>
+    <canvas ref={canvasRef} className="hidden-canvas"/>
+    <canvas ref={warpRef} className="hidden-canvas"/>
+    {!running?<button className="primary" onClick={start}>背面カメラを起動</button>:<button className="secondary" onClick={stop}>カメラを停止</button>}
+    <div className={found?"receive-result success":"receive-result"}><span>{found?"通信領域を取得":"通信領域を探索中"}</span><strong>{found?"FOUND":"—"}</strong></div>
+    <div className="debug-panel">
+      <div className="debug-title">マーカー検出</div><div className="debug-info">{score}%</div>
+      <div className="debug-title">種別 / FRAME</div><div className="debug-info">{type} / {id}</div>
+      <div className="debug-title">復元データ</div><div className="debug-info">{payload}</div>
+      <div className="debug-title">処理</div><div className="debug-info">{geometry}</div>
+    </div>
+    {error&&<div className="error">{error}</div>}
+  </div>;
+}
+
+
+function ContrastTestSender() {
+  const [contrast, setContrast] = useState(35);
+  const background = 248;
+  const markerValue = Math.max(0, Math.min(255, background - contrast * 2.35));
+
+  return (
+    <div className="optical-panel">
+      <div className="mode-label">不可視マーカーテスト</div>
+      <h2>人には薄く、カメラには強く</h2>
+      <p className="hint">
+        マーカーの明暗差を変えます。まずはどこまで薄くしてもカメラ側で発見できるかを測定します。
+      </p>
+      <div style={{background:"rgb("+background+","+background+","+background+")",borderRadius:20,padding:28,display:"grid",placeItems:"center",border:"1px solid rgba(0,0,0,.08)"}}>
+        <div style={{width:"min(68vw, 320px)",aspectRatio:"1",display:"grid",gridTemplateColumns:"repeat(7, 1fr)",overflow:"hidden",borderRadius:8}}>
+          {INNER.map((bit, i) => (
+            <span key={i} style={{background:bit ? "rgb("+markerValue+","+markerValue+","+markerValue+")" : "rgb("+background+","+background+","+background+")"}} />
+          ))}
+        </div>
+      </div>
+      <div className="debug-panel">
+        <div className="debug-title">マーカー濃度</div>
+        <div className="debug-info">{contrast}%（背景との差 {Math.round(background - markerValue)}）</div>
+        <input type="range" min="0" max="100" value={contrast} onChange={(event) => setContrast(Number(event.target.value))} style={{width:"100%",marginTop:12}} />
+        <div className="debug-info" style={{marginTop:8}}>0% = ほぼ見えない / 100% = はっきり見える</div>
+      </div>
+    </div>
+  );
+}
+
+function ContrastTestReceiver() {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const sourceCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const processedCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const frameRef = useRef<number | null>(null);
+  const [running, setRunning] = useState(false);
+  const [found, setFound] = useState(false);
+  const [score, setScore] = useState(0);
+  const [contrast, setContrast] = useState(0);
+  const [processing, setProcessing] = useState("—");
+  const [error, setError] = useState("");
+
+  const stop = () => {
+    if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+    frameRef.current = null;
+    const video = videoRef.current;
+    if (video?.srcObject instanceof MediaStream) {
+      video.srcObject.getTracks().forEach((track) => track.stop());
+      video.srcObject = null;
+    }
+    setRunning(false);
+    setFound(false);
+    setScore(0);
+    setContrast(0);
+    setProcessing("—");
+  };
+
+  const scan = () => {
+    const video = videoRef.current;
+    const sourceCanvas = sourceCanvasRef.current;
+    const processedCanvas = processedCanvasRef.current;
+    if (!video || !sourceCanvas || !processedCanvas || video.readyState < 2 || !video.videoWidth) {
+      frameRef.current = requestAnimationFrame(scan);
+      return;
+    }
+
+    const size = 320;
