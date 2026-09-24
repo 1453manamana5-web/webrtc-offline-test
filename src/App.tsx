@@ -247,7 +247,8 @@ function Receiver() {
 
         const score = shapeScore * 0.85 + dotScore * 0.15;
         if (score > bestScore) {
-          bestScore = score;          bestArea = area;
+          bestScore = score;
+          bestArea = area;
           bestBox = `${minX},${minY} → ${maxX},${maxY}`;
           bestCenterX = cx;
           bestCenterY = cy;
@@ -497,6 +498,7 @@ function findOcclusionTolerantBox(
 
           if (observed === cell.expected) matches++;
         }
+
         const score = matches / cells.length;
         const darkVisibility = visibleExpectedDark / expectedDark;
 
@@ -745,7 +747,8 @@ function ObliqueTestReceiver() {
   const scan = () => {
     const video = videoRef.current;
     const sourceCanvas = sourceCanvasRef.current;
-    const warpCanvas = warpCanvasRef.current;    if (!video || !sourceCanvas || !warpCanvas || video.readyState < 2 || !video.videoWidth) {
+    const warpCanvas = warpCanvasRef.current;
+    if (!video || !sourceCanvas || !warpCanvas || video.readyState < 2 || !video.videoWidth) {
       frameRef.current = requestAnimationFrame(scan);
       return;
     }
@@ -986,6 +989,7 @@ function ObliqueTestReceiver() {
 
 const FRAME_SIZE = 40;
 const DATA_SIZE = 24;
+const MARKER_OFFSET = 1;
 
 const TEST_FRAMES = [
   { type: "STATUS", id: 1, payload: "ENTRY-A|62|4" },
@@ -993,6 +997,7 @@ const TEST_FRAMES = [
   { type: "TICKET", id: 3, payload: "A00124|E|175901" },
   { type: "STATUS", id: 4, payload: "ENTRY-A|64|0" },
 ];
+
 function putMarker(cells:number[][], top:number, left:number, rotate=0) {
   for(let r=0;r<7;r++) for(let col=0;col<7;col++){
     let rr=r, cc=col;
@@ -1008,9 +1013,12 @@ function putMarker(cells:number[][], top:number, left:number, rotate=0) {
 function makeCommunicationFrame(frame: typeof TEST_FRAMES[number]) {
   const cells=Array.from({length:FRAME_SIZE},()=>Array.from({length:FRAME_SIZE},()=>0));
 
-  // Four corners reuse the marker technology already proven in the
-  // orientation/oblique tests. They define the communication rectangle.
-  // Keep a one-cell gap between finder markers and the data area.\n  // The previous layout touched the data region, causing dark cells to\n  // merge into large connected components during receiver detection.\n  putMarker(cells,0,0,0);\n  putMarker(cells,0,FRAME_SIZE-7,1);\n  putMarker(cells,FRAME_SIZE-7,FRAME_SIZE-7,2);\n  putMarker(cells,FRAME_SIZE-7,0,3);
+  // Four corners reuse the proven marker technology.
+  // They sit directly in the frame corners, with a one-cell gap to the data area.
+  putMarker(cells,0,0,0);
+  putMarker(cells,0,FRAME_SIZE-7,1);
+  putMarker(cells,FRAME_SIZE-7,FRAME_SIZE-7,2);
+  putMarker(cells,FRAME_SIZE-7,0,3);
 
   const bytes=new TextEncoder().encode(frame.payload);
   const dataBits:number[]=[];
@@ -1018,7 +1026,7 @@ function makeCommunicationFrame(frame: typeof TEST_FRAMES[number]) {
 
   // 24x24 data region.
   // Header uses rows 0..3. Payload uses rows 4..23.
-  // 15 bytes = 120 bits = 10x12 logical bits, with every bit repeated in a 2x2 block.
+  // 15 bytes = 120 bits = 10x12 logical bits, each repeated in a 2x2 block.
   const data=Array.from({length:DATA_SIZE},()=>Array(DATA_SIZE).fill(0));
 
   const len=Math.min(15,bytes.length);
@@ -1083,7 +1091,8 @@ function CommunicationFrame() {
         </div>
       </div>
 
-      <div className="frame-info">        <div>
+      <div className="frame-info">
+        <div>
           <span>種別</span>
           <strong>{frame.type}</strong>
         </div>
@@ -1339,70 +1348,55 @@ function CommunicationReceiver() {
   </div>;
 }
 
-
-function ContrastTestSender() {
-  const [contrast, setContrast] = useState(35);
-  const background = 248;
-  const markerValue = Math.max(0, Math.min(255, background - contrast * 2.35));
+function App() {
+  const [mode, setMode] = useState<"select" | "send" | "receive" | "oblique" | "frame" | "frame-receive">("select");
 
   return (
-    <div className="optical-panel">
-      <div className="mode-label">不可視マーカーテスト</div>
-      <h2>人には薄く、カメラには強く</h2>
-      <p className="hint">
-        マーカーの明暗差を変えます。まずはどこまで薄くしてもカメラ側で発見できるかを測定します。
-      </p>
-      <div style={{background:"rgb("+background+","+background+","+background+")",borderRadius:20,padding:28,display:"grid",placeItems:"center",border:"1px solid rgba(0,0,0,.08)"}}>
-        <div style={{width:"min(68vw, 320px)",aspectRatio:"1",display:"grid",gridTemplateColumns:"repeat(7, 1fr)",overflow:"hidden",borderRadius:8}}>
-          {INNER.map((bit, i) => (
-            <span key={i} style={{background:bit ? "rgb("+markerValue+","+markerValue+","+markerValue+")" : "rgb("+background+","+background+","+background+")"}} />
-          ))}
-        </div>
-      </div>
-      <div className="debug-panel">
-        <div className="debug-title">マーカー濃度</div>
-        <div className="debug-info">{contrast}%（背景との差 {Math.round(background - markerValue)}）</div>
-        <input type="range" min="0" max="100" value={contrast} onChange={(event) => setContrast(Number(event.target.value))} style={{width:"100%",marginTop:12}} />
-        <div className="debug-info" style={{marginTop:8}}>0% = ほぼ見えない / 100% = はっきり見える</div>
-      </div>
-    </div>
+    <main className="app">
+      <section className="card">
+        <div className="eyebrow">OPTICAL MARKER ORIENTATION TEST</div>
+        <h1>独自マーカー向き検出</h1>
+        <p className="sub">マーカーを発見したあと、位置・大きさ・向きを取得します。</p>
+
+        {mode === "select" && (
+          <div className="role-grid">
+            <button className="role-button" onClick={() => setMode("send")}>
+              <span>送信側</span>
+              <strong>模様を表示</strong>
+              <small>向き検出用マーカー</small>
+            </button>
+            <button className="role-button" onClick={() => setMode("receive")}>
+              <span>受信側</span>
+              <strong>カメラで探す</strong>
+              <small>位置・大きさ・向きを取得</small>
+            </button>
+            <button className="role-button" onClick={() => setMode("oblique")}>
+              <span>斜めテスト</span>
+              <strong>四隅を探す</strong>
+              <small>7×7認識なしの基礎テスト</small>
+            </button>
+            <button className="role-button" onClick={() => setMode("frame")}>
+              <span>光通信フレーム</span>
+              <strong>模様を試す</strong>
+              <small>24×24・分散型通信パターン</small>
+            </button>
+            <button className="role-button" onClick={() => setMode("frame-receive")}>
+              <span>光通信フレーム</span>
+              <strong>カメラで受信</strong>
+              <small>背面カメラでデータを復元</small>
+            </button>
+          </div>
+        )}
+
+        {mode !== "select" && (
+          <>
+            {mode === "send" ? <Sender /> : mode === "receive" ? <Receiver /> : mode === "oblique" ? <ObliqueTestReceiver /> : mode === "frame-receive" ? <CommunicationReceiver /> : <CommunicationFrame />}
+            <button className="reset" onClick={() => setMode("select")}>最初に戻る</button>
+          </>
+        )}
+      </section>
+    </main>
   );
 }
 
-function ContrastTestReceiver() {
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const sourceCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const processedCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const frameRef = useRef<number | null>(null);
-  const [running, setRunning] = useState(false);
-  const [found, setFound] = useState(false);
-  const [score, setScore] = useState(0);
-  const [contrast, setContrast] = useState(0);
-  const [processing, setProcessing] = useState("—");
-  const [error, setError] = useState("");
-
-  const stop = () => {
-    if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
-    frameRef.current = null;
-    const video = videoRef.current;
-    if (video?.srcObject instanceof MediaStream) {
-      video.srcObject.getTracks().forEach((track) => track.stop());
-      video.srcObject = null;
-    }
-    setRunning(false);
-    setFound(false);
-    setScore(0);
-    setContrast(0);
-    setProcessing("—");
-  };
-
-  const scan = () => {
-    const video = videoRef.current;
-    const sourceCanvas = sourceCanvasRef.current;
-    const processedCanvas = processedCanvasRef.current;
-    if (!video || !sourceCanvas || !processedCanvas || video.readyState < 2 || !video.videoWidth) {
-      frameRef.current = requestAnimationFrame(scan);
-      return;
-    }
-
-    const size = 320;
+export default App;
