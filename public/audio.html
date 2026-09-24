@@ -139,7 +139,8 @@ async function startRx(){
       const norm=Math.max(0,(c.strength-145)/110);
       $("level").style.width=Math.min(100,norm*180)+"%";
       const detectedFreq=c.strength>145?(c.bit?base+1000:base):"—";
-      $("freqReadout").textContent="検出周波数: "+detectedFreq+" Hz / 強度 "+Math.round(c.strength)+" / 0:"+Math.round(c.v0)+" 1:"+Math.round(c.v1)+" 差:"+Math.round(c.contrast);\n      $("symbolReadout").textContent="判定シンボル: "+(c.bit>=0?c.bit:"—");
+      $("freqReadout").textContent="検出周波数: "+detectedFreq+" Hz / 強度 "+Math.round(c.strength)+" / 0:"+Math.round(c.v0)+" 1:"+Math.round(c.v1)+" 差:"+Math.round(c.contrast);
+      $("symbolReadout").textContent="判定シンボル: "+(c.bit>=0?c.bit:"—");
       const now=performance.now();
       if(now-lastSample>=sampleStep){
         lastSample=now;symbolSamples.push(c.bit);
