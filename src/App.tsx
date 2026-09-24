@@ -247,8 +247,7 @@ function Receiver() {
 
         const score = shapeScore * 0.85 + dotScore * 0.15;
         if (score > bestScore) {
-          bestScore = score;
-          bestArea = area;
+          bestScore = score;          bestArea = area;
           bestBox = `${minX},${minY} → ${maxX},${maxY}`;
           bestCenterX = cx;
           bestCenterY = cy;
@@ -498,7 +497,6 @@ function findOcclusionTolerantBox(
 
           if (observed === cell.expected) matches++;
         }
-
         const score = matches / cells.length;
         const darkVisibility = visibleExpectedDark / expectedDark;
 
@@ -747,8 +745,7 @@ function ObliqueTestReceiver() {
   const scan = () => {
     const video = videoRef.current;
     const sourceCanvas = sourceCanvasRef.current;
-    const warpCanvas = warpCanvasRef.current;
-    if (!video || !sourceCanvas || !warpCanvas || video.readyState < 2 || !video.videoWidth) {
+    const warpCanvas = warpCanvasRef.current;    if (!video || !sourceCanvas || !warpCanvas || video.readyState < 2 || !video.videoWidth) {
       frameRef.current = requestAnimationFrame(scan);
       return;
     }
@@ -997,7 +994,6 @@ const TEST_FRAMES = [
   { type: "TICKET", id: 3, payload: "A00124|E|175901" },
   { type: "STATUS", id: 4, payload: "ENTRY-A|64|0" },
 ];
-
 function putMarker(cells:number[][], top:number, left:number, rotate=0) {
   for(let r=0;r<7;r++) for(let col=0;col<7;col++){
     let rr=r, cc=col;
@@ -1097,8 +1093,7 @@ function CommunicationFrame() {
         </div>
       </div>
 
-      <div className="frame-info">
-        <div>
+      <div className="frame-info">        <div>
           <span>種別</span>
           <strong>{frame.type}</strong>
         </div>
@@ -1336,8 +1331,300 @@ function CommunicationReceiver() {
   </div>;
 }
 
+
+function ContrastTestSender() {
+  const [contrast, setContrast] = useState(35);
+  const background = 248;
+  const markerValue = Math.max(0, Math.min(255, background - contrast * 2.35));
+
+  return (
+    <div className="optical-panel">
+      <div className="mode-label">不可視マーカーテスト</div>
+      <h2>人には薄く、カメラには強く</h2>
+      <p className="hint">
+        マーカーの明暗差を変えます。まずはどこまで薄くしてもカメラ側で発見できるかを測定します。
+      </p>
+      <div style={{background:"rgb("+background+","+background+","+background+")",borderRadius:20,padding:28,display:"grid",placeItems:"center",border:"1px solid rgba(0,0,0,.08)"}}>
+        <div style={{width:"min(68vw, 320px)",aspectRatio:"1",display:"grid",gridTemplateColumns:"repeat(7, 1fr)",overflow:"hidden",borderRadius:8}}>
+          {INNER.map((bit, i) => (
+            <span key={i} style={{background:bit ? "rgb("+markerValue+","+markerValue+","+markerValue+")" : "rgb("+background+","+background+","+background+")"}} />
+          ))}
+        </div>
+      </div>
+      <div className="debug-panel">
+        <div className="debug-title">マーカー濃度</div>
+        <div className="debug-info">{contrast}%（背景との差 {Math.round(background - markerValue)}）</div>
+        <input type="range" min="0" max="100" value={contrast} onChange={(event) => setContrast(Number(event.target.value))} style={{width:"100%",marginTop:12}} />
+        <div className="debug-info" style={{marginTop:8}}>0% = ほぼ見えない / 100% = はっきり見える</div>
+      </div>
+    </div>
+  );
+}
+
+function ContrastTestReceiver() {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const sourceCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const processedCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const frameRef = useRef<number | null>(null);
+  const [running, setRunning] = useState(false);
+  const [found, setFound] = useState(false);
+  const [score, setScore] = useState(0);
+  const [contrast, setContrast] = useState(0);
+  const [processing, setProcessing] = useState("—");
+  const [error, setError] = useState("");
+
+  const stop = () => {
+    if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+    frameRef.current = null;
+    const video = videoRef.current;
+    if (video?.srcObject instanceof MediaStream) {
+      video.srcObject.getTracks().forEach((track) => track.stop());
+      video.srcObject = null;
+    }
+    setRunning(false);
+    setFound(false);
+    setScore(0);
+    setContrast(0);
+    setProcessing("—");
+  };
+
+  const scan = () => {
+    const video = videoRef.current;
+    const sourceCanvas = sourceCanvasRef.current;
+    const processedCanvas = processedCanvasRef.current;
+    if (!video || !sourceCanvas || !processedCanvas || video.readyState < 2 || !video.videoWidth) {
+      frameRef.current = requestAnimationFrame(scan);
+      return;
+    }
+
+    const size = 320;
+    sourceCanvas.width = size;
+    sourceCanvas.height = size;
+    processedCanvas.width = size;
+    processedCanvas.height = size;
+
+    const sourceCtx = sourceCanvas.getContext("2d", {willReadFrequently:true});
+    const processedCtx = processedCanvas.getContext("2d", {willReadFrequently:true});
+    if (!sourceCtx || !processedCtx) {
+      frameRef.current = requestAnimationFrame(scan);
+      return;
+    }
+
+    const sourceSize = Math.min(video.videoWidth, video.videoHeight);
+    const sx = (video.videoWidth - sourceSize) / 2;
+    const sy = (video.videoHeight - sourceSize) / 2;
+    sourceCtx.drawImage(video, sx, sy, sourceSize, sourceSize, 0, 0, size, size);
+
+    const image = sourceCtx.getImageData(0, 0, size, size);
+    const data = image.data;
+    const gray = new Uint8Array(size * size);
+    let min = 255;
+    let max = 0;
+
+    for (let i = 0; i < size * size; i++) {
+      const p = i * 4;
+      const value = Math.round((data[p] + data[p + 1] + data[p + 2]) / 3);
+      gray[i] = value;
+      min = Math.min(min, value);
+      max = Math.max(max, value);
+    }
+
+    const enhanced = new Uint8Array(size * size);
+    const radius = 4;
+    const integral = new Float64Array((size + 1) * (size + 1));
+
+    for (let y = 0; y < size; y++) {
+      let rowSum = 0;
+      for (let x = 0; x < size; x++) {
+        rowSum += gray[y * size + x];
+        integral[(y + 1) * (size + 1) + (x + 1)] = integral[y * (size + 1) + (x + 1)] + rowSum;
+      }
+    }
+
+    const rectMean = (x0: number, y0: number, x1: number, y1: number) => {
+      const ax = Math.max(0, x0);
+      const ay = Math.max(0, y0);
+      const bx = Math.min(size - 1, x1);
+      const by = Math.min(size - 1, y1);
+      const A = integral[ay * (size + 1) + ax];
+      const B = integral[ay * (size + 1) + (bx + 1)];
+      const C = integral[(by + 1) * (size + 1) + ax];
+      const D = integral[(by + 1) * (size + 1) + (bx + 1)];
+      return (D - B - C + A) / ((bx - ax + 1) * (by - ay + 1));
+    };
+
+    let enhancedMin = 255;
+    let enhancedMax = 0;
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const localMean = rectMean(x - radius, y - radius, x + radius, y + radius);
+        const value = Math.max(0, Math.min(255, 128 + (gray[y * size + x] - localMean) * 6));
+        enhanced[y * size + x] = value;
+        enhancedMin = Math.min(enhancedMin, value);
+        enhancedMax = Math.max(enhancedMax, value);
+      }
+    }
+
+    const processedImage = processedCtx.createImageData(size, size);
+    for (let i = 0; i < size * size; i++) {
+      const value = enhanced[i];
+      const p = i * 4;
+      processedImage.data[p] = value;
+      processedImage.data[p + 1] = value;
+      processedImage.data[p + 2] = value;
+      processedImage.data[p + 3] = 255;
+    }
+    processedCtx.putImageData(processedImage, 0, 0);
+
+    const grid = 80;
+    const block = size / grid;
+    const small = new Uint8Array(grid * grid);
+    for (let gy = 0; gy < grid; gy++) {
+      for (let gx = 0; gx < grid; gx++) {
+        let total = 0;
+        let count = 0;
+        const x0 = Math.floor(gx * block);
+        const x1 = Math.min(size, Math.ceil((gx + 1) * block));
+        const y0 = Math.floor(gy * block);
+        const y1 = Math.min(size, Math.ceil((gy + 1) * block));
+        for (let y = y0; y < y1; y++) {
+          for (let x = x0; x < x1; x++) {
+            total += enhanced[y * size + x];
+            count++;
+          }
+        }
+        small[gy * grid + gx] = total / count;
+      }
+    }
+
+    const dark = new Uint8Array(grid * grid);
+    for (let i = 0; i < small.length; i++) dark[i] = small[i] < 128 ? 1 : 0;
+
+    const seen = new Uint8Array(grid * grid);
+    let bestScore = 0;
+    let bestArea = 0;
+
+    for (let start = 0; start < dark.length; start++) {
+      if (!dark[start] || seen[start]) continue;
+      const queue = [start];
+      seen[start] = 1;
+      let head = 0;
+      let area = 0;
+      let minX = grid;
+      let minY = grid;
+      let maxX = -1;
+      let maxY = -1;
+
+      while (head < queue.length) {
+        const p = queue[head++];
+        const x = p % grid;
+        const y = Math.floor(p / grid);
+        area++;
+        minX = Math.min(minX, x);
+        maxX = Math.max(maxX, x);
+        minY = Math.min(minY, y);
+        maxY = Math.max(maxY, y);
+        for (const n of [p - 1, p + 1, p - grid, p + grid]) {
+          if (n < 0 || n >= dark.length || seen[n] || !dark[n]) continue;
+          const nx = n % grid;
+          const ny = Math.floor(n / grid);
+          if (Math.abs(nx - x) + Math.abs(ny - y) !== 1) continue;
+          seen[n] = 1;
+          queue.push(n);
+        }
+      }
+
+      const bw = maxX - minX + 1;
+      const bh = maxY - minY + 1;
+      if (area < 20 || bw < 8 || bh < 8 || bw > 36 || bh > 36) continue;
+      const ratio = bw / bh;
+      if (ratio < 0.65 || ratio > 1.35) continue;
+
+      const sample: number[] = [];
+      for (let row = 0; row < 7; row++) {
+        for (let col = 0; col < 7; col++) {
+          const px = Math.min(grid - 1, Math.floor(minX + ((col + 0.5) / 7) * bw));
+          const py = Math.min(grid - 1, Math.floor(minY + ((row + 0.5) / 7) * bh));
+          sample.push(dark[py * grid + px]);
+        }
+      }
+
+      let matches = 0;
+      for (let i = 0; i < INNER.length; i++) {
+        if (sample[i] === INNER[i]) matches++;
+      }
+
+      const shapeScore = matches / INNER.length;
+      if (shapeScore >= 0.70 && shapeScore > bestScore) {
+        bestScore = shapeScore;
+        bestArea = area;
+      }
+    }
+
+    const candidateFound = bestScore >= 0.70 && bestArea >= 20;
+    setFound(candidateFound);
+    setScore(Math.round(bestScore * 100));
+    setContrast(max - min);
+    setProcessing("局所コントラスト強調 ×6 / 元明暗差 " + (max - min) + " / 強調後 " + (enhancedMax - enhancedMin));
+
+    frameRef.current = requestAnimationFrame(scan);
+  };
+
+  const start = async () => {
+    try {
+      setError("");
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {facingMode:{ideal:"environment"},width:{ideal:1280},height:{ideal:720}},
+        audio: false,
+      });
+      if (!videoRef.current) return;
+      videoRef.current.srcObject = stream;
+      await videoRef.current.play();
+      setRunning(true);
+      frameRef.current = requestAnimationFrame(scan);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "カメラを起動できませんでした。");
+    }
+  };
+
+  useEffect(() => () => stop(), []);
+
+  return (
+    <div className="optical-panel">
+      <div className="mode-label">不可視マーカーテスト</div>
+      <h2>カメラ側でコントラストを強調</h2>
+      <p className="hint">元画像では目立たない明暗差を局所的に強調し、今までのマーカー認識に渡します。</p>
+      <div className="camera-wrap">
+        <video ref={videoRef} muted playsInline />
+        <div className="scan-hud"><span>{found ? "ENHANCED MARKER FOUND" : "SEARCHING..."}</span></div>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginTop:12}}>
+        <div>
+          <div className="test-label">元映像</div>
+          <canvas ref={sourceCanvasRef} style={{width:"100%",aspectRatio:"1",borderRadius:14,display:"block"}} />
+        </div>
+        <div>
+          <div className="test-label">強調後</div>
+          <canvas ref={processedCanvasRef} style={{width:"100%",aspectRatio:"1",borderRadius:14,display:"block"}} />
+        </div>
+      </div>
+      {!running ? <button className="primary" onClick={start}>背面カメラを起動</button> : <button className="secondary" onClick={stop}>カメラを停止</button>}
+      <div className={found ? "receive-result success" : "receive-result"}>
+        <span>{found ? "強調後にマーカーを認識" : "強調後のマーカーを探索中"}</span>
+        <strong>{found ? "FOUND" : "—"}</strong>
+      </div>
+      <div className="debug-panel">
+        <div className="debug-title">認識スコア</div><div className="debug-info">{score}%</div>
+        <div className="debug-title">元映像の明暗差</div><div className="debug-info">{contrast}</div>
+        <div className="debug-title">画像処理</div><div className="debug-info">{processing}</div>
+      </div>
+      {error && <div className="error">{error}</div>}
+    </div>
+  );
+}
+
 function App() {
-  const [mode, setMode] = useState<"select" | "send" | "receive" | "oblique" | "frame" | "frame-receive">("select");
+  const [mode, setMode] = useState<"select" | "send" | "receive" | "oblique" | "frame" | "frame-receive" | "contrast-send" | "contrast-receive">("select");
 
   return (
     <main className="app">
@@ -1373,12 +1660,22 @@ function App() {
               <strong>カメラで受信</strong>
               <small>背面カメラでデータを復元</small>
             </button>
+            <button className="role-button" onClick={() => setMode("contrast-send")}>
+              <span>不可視マーカー</span>
+              <strong>濃さを変える</strong>
+              <small>人間から見た目立ちやすさを調整</small>
+            </button>
+            <button className="role-button" onClick={() => setMode("contrast-receive")}>
+              <span>不可視マーカー</span>
+              <strong>カメラで認識</strong>
+              <small>局所コントラストを強調して検出</small>
+            </button>
           </div>
         )}
 
         {mode !== "select" && (
           <>
-            {mode === "send" ? <Sender /> : mode === "receive" ? <Receiver /> : mode === "oblique" ? <ObliqueTestReceiver /> : mode === "frame-receive" ? <CommunicationReceiver /> : <CommunicationFrame />}
+            {mode === "send" ? <Sender /> : mode === "receive" ? <Receiver /> : mode === "oblique" ? <ObliqueTestReceiver /> : mode === "frame-receive" ? <CommunicationReceiver /> : mode === "contrast-send" ? <ContrastTestSender /> : mode === "contrast-receive" ? <ContrastTestReceiver /> : <CommunicationFrame />}
             <button className="reset" onClick={() => setMode("select")}>最初に戻る</button>
           </>
         )}
