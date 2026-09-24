@@ -168,4 +168,53 @@ $("stopReceive").onclick=()=>{
   analyser=null;$("level").style.width="0%";$("freqReadout").textContent="検出周波数: —";$("decodeDebug").textContent="デコーダ: 停止";
   setStatus("receiveStatus","停止")
 };
-</script></body></html>
+
+/* CUE-inspired Data Over Sound v2 framing prototype.
+   This is a framing layer only; the private CUE DSP is not copied. */
+const DOS_SYMBOL_MAX=461;
+const DOS_MAGIC=[1,0,1,0,1,1,0,0];
+function dosCrc8(bytes){
+  let crc=0;
+  for(const b of bytes){
+    crc^=b;
+    for(let i=0;i<8;i++)crc=(crc&0x80)?((crc<<1)^0x07)&255:(crc<<1)&255;
+  }
+  return crc;
+}
+function dosSymbolBits(n){
+  return Array.from({length:9},(_,i)=>(n>>(8-i))&1);
+}
+function dosPack(text){
+  const payload=new TextEncoder().encode(text).slice(0,48);
+  const bytes=[payload.length,...payload,dosCrc8(payload)];
+  const symbols=[];
+  for(let i=0;i<bytes.length;i+=2){
+    const n=bytes[i]*256+(bytes[i+1]??0);
+    if(n>DOS_SYMBOL_MAX) throw new Error("payload symbol overflow");
+    symbols.push(n);
+  }
+  return {bits:[...DOS_MAGIC,...symbols.flatMap(dosSymbolBits)],symbols,payload};
+}
+function dosDecode(bits){
+  for(let p=0;p<=Math.min(bits.length-17,80);p++){
+    if(!DOS_MAGIC.every((v,i)=>bits[p+i]===v))continue;
+    const rest=bits.slice(p+8), symbols=[];
+    for(let i=0;i+9<=rest.length;i+=9){
+      let n=0;for(let j=0;j<9;j++)n=(n<<1)|rest[i+j];
+      if(n>DOS_SYMBOL_MAX)break;
+      symbols.push(n);
+      const bytes=[];
+      for(const s of symbols)bytes.push((s>>8)&255,s&255);
+      const len=bytes[0];
+      if(len>=1&&len<=48&&bytes.length>=len+2){
+        const payload=bytes.slice(1,1+len),crc=bytes[1+len];
+        if(dosCrc8(payload)===crc){
+          try{return {text:new TextDecoder("utf-8",{fatal:true}).decode(new Uint8Array(payload)),symbols:symbols.length}}
+          catch{}
+        }
+      }
+    }
+  }
+  return null;
+}
+\n</script></body></html>
