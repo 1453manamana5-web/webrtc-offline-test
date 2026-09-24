@@ -176,6 +176,7 @@ function dos2EncodeText(text){
   return frame;
 }
 async function sendDos2(){
+  setStatus("sendStatus","v2送信を開始します…");
   const ctx=await audioContext();
   const frame=dos2EncodeText($("message").value);
   if(osc){try{osc.stop()}catch{}}
@@ -197,6 +198,7 @@ function nearestDos2Symbol(data,sr,n){
   return dos2Classify(data,sr,n);
 }
 async function startDos2Rx(){
+  setStatus("receiveStatus","v2マイクを準備中…");
   try{
     if(rxCtx){try{await rxCtx.close()}catch{}}
     rxCtx=new(window.AudioContext||window.webkitAudioContext)();await rxCtx.resume();
@@ -252,9 +254,15 @@ async function startDos2Rx(){
   }catch(e){setStatus("receiveStatus","v2マイク開始失敗: "+(e.message||e))}
 }
 const originalSend=$("send").onclick;
-$("send").onclick=()=>currentProtocol()==="dos2"?sendDos2():originalSend();
+$("send").onclick=async()=>{
+  try{await (currentProtocol()==="dos2"?sendDos2():originalSend())}
+  catch(e){setStatus("sendStatus","送信開始失敗: "+(e.message||e))}
+};
 const originalReceive=$("receive").onclick;
-$("receive").onclick=()=>currentProtocol()==="dos2"?startDos2Rx():originalReceive();
+$("receive").onclick=async()=>{
+  try{await (currentProtocol()==="dos2"?startDos2Rx():originalReceive())}
+  catch(e){setStatus("receiveStatus","受信開始失敗: "+(e.message||e))}
+};
 
 $("stopReceive").onclick=()=>{
   if(rxTimer)cancelAnimationFrame(rxTimer);rxTimer=null;
