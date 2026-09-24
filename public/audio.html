@@ -217,4 +217,74 @@ function dosDecode(bits){
   }
   return null;
 }
-\n</script></body></html>
+\n
+/* Data Over Sound v2: 4-FSK symbol transport.
+   Experimental browser protocol; independent from the legacy detector. */
+const DOS2_FREQS=[17250,17750,18250,18750];
+const DOS2_SYMBOL_MS=70;
+const DOS2_PREAMBLE=[0,3,1,2,0,3,1,2,0,3,1,2];
+const DOS2_MAX_PAYLOAD=48;
+
+function dos2Crc16(bytes){
+  let crc=0xFFFF;
+  for(const b of bytes){
+    crc^=b;
+    for(let i=0;i<8;i++)crc=(crc&1)?((crc>>>1)^0xA001):crc>>>1;
+  }
+  return crc;
+}
+function dos2BytesToSymbols(bytes){
+  const out=[];
+  for(const b of bytes){
+    out.push((b>>>6)&3,(b>>>4)&3,(b>>>2)&3,b&3);
+  }
+  return out;
+}
+function dos2SymbolsToBytes(symbols){
+  const bytes=[];
+  for(let i=0;i+3<symbols.length;i+=4)
+    bytes.push((symbols[i]<<6)|(symbols[i+1]<<4)|(symbols[i+2]<<2)|symbols[i+3]);
+  return bytes;
+}
+function dos2Frame(text){
+  const payload=Array.from(new TextEncoder().encode(text)).slice(0,DOS2_MAX_PAYLOAD);
+  const body=[payload.length,...payload];
+  const crc=dos2Crc16(body);
+  const bytes=[...body,crc&255,(crc>>>8)&255];
+  return [...DOS2_PREAMBLE,...dos2BytesToSymbols(bytes)];
+}
+function dos2TonePower(data,sr,n,f){
+  const k=f*n/sr;
+  const bin=Math.round(k);
+  let p=0;
+  for(let i=Math.max(0,bin-1);i<=Math.min(data.length-1,bin+1);i++)p=Math.max(p,data[i]);
+  return p;
+}
+function dos2Classify(data,sr,n){
+  let best=-1,bestPower=0,second=0;
+  for(let i=0;i<DOS2_FREQS.length;i++){
+    const p=dos2TonePower(data,sr,n,DOS2_FREQS[i]);
+    if(p>bestPower){second=bestPower;bestPower=p;best=i}
+    else if(p>second)second=p;
+  }
+  return {symbol:best,power:bestPower,contrast:bestPower-second};
+}
+function dos2Decode(symbols){
+  for(let p=0;p<=Math.max(0,symbols.length-DOS2_PREAMBLE.length);p++){
+    let ok=true;
+    for(let i=0;i<DOS2_PREAMBLE.length;i++)if(symbols[p+i]!==DOS2_PREAMBLE[i]){ok=false;break}
+    if(!ok)continue;
+    const bytes=dos2SymbolsToBytes(symbols.slice(p+DOS2_PREAMBLE.length));
+    if(bytes.length<3)continue;
+    const len=bytes[0];
+    if(len<1||len>DOS2_MAX_PAYLOAD||bytes.length<len+3)continue;
+    const body=bytes.slice(0,len+1);
+    const got=bytes[len+1]|(bytes[len+2]<<8);
+    if(dos2Crc16(body)!==got)continue;
+    try{return new TextDecoder("utf-8",{fatal:true}).decode(new Uint8Array(bytes.slice(1,len+1)))}
+    catch{}
+  }
+  return null;
+}
+
+</script></body></html>
