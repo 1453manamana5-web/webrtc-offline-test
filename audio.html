@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>音通信テスト</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Hiragino Sans",sans-serif;background:#07111f;color:#f5f7fb}
+main{max-width:900px;margin:auto;padding:28px 18px 50px}.eyebrow{font-size:12px;letter-spacing:.14em;opacity:.65}.title{font-size:32px;margin:8px 0}.sub{opacity:.72;line-height:1.6}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:22px}@media(max-width:720px){.grid{grid-template-columns:1fr}}
+.card{background:#101c2e;border:1px solid #26364e;border-radius:22px;padding:20px;box-shadow:0 12px 35px #0003}.card h2{margin:0 0 8px;font-size:20px}.hint{font-size:14px;line-height:1.55;opacity:.7}
+textarea,input{width:100%;background:#081321;color:#fff;border:1px solid #344862;border-radius:12px;padding:12px;font:inherit}textarea{min-height:110px;resize:vertical}
+button{border:0;border-radius:13px;padding:13px 16px;font:600 15px inherit;cursor:pointer}.primary{background:#fff;color:#081321}.secondary{background:#263a55;color:#fff}.row{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}.status{margin-top:14px;padding:13px;border-radius:12px;background:#0a1524;border:1px solid #26364e}.ok{border-color:#3b9d72}.meter{height:8px;background:#07101d;border-radius:20px;overflow:hidden;margin-top:10px}.meter i{display:block;height:100%;width:0;background:#6ee7b7}.value{font-variant-numeric:tabular-nums}.small{font-size:12px;opacity:.6}.result{font-size:24px;font-weight:700;word-break:break-all;margin-top:8px;min-height:34px}
+label{display:block;font-size:13px;margin:12px 0 6px;opacity:.8}.pill{display:inline-block;padding:5px 9px;border-radius:999px;background:#1d2c42;font-size:12px;margin-right:5px}.danger{color:#ffb4b4}.footer{margin-top:20px;opacity:.55;font-size:12px;line-height:1.6}
+</style>
+</head>
+<body>
+<main>
+<div class="eyebrow">ACOUSTIC DATA LINK</div>
+<h1 class="title">音通信テスト</h1>
+<p class="sub">iPadのスピーカーから高周波のFSK信号を出し、別のiPadのマイクで受信して短いデータを復元します。まずは「送信 → 受信」の成立確認が目的です。</p>
+
+<div class="grid">
+<section class="card">
+<h2>① 送信側</h2>
+<p class="hint">この端末から音を出します。最初は短い文字列で試してください。</p>
+<label for="message">送信データ</label>
+<textarea id="message">TEST-001</textarea>
+<label for="freq">通信帯域</label>
+<select id="freq" style="width:100%;padding:12px;border-radius:12px;background:#081321;color:#fff;border:1px solid #344862;font:inherit">
+<option value="17500">17.5 / 18.5 kHz</option>
+<option value="16500">16.5 / 17.5 kHz</option>
+<option value="18500">18.5 / 19.5 kHz</option>
+</select>
+<div class="row"><button class="primary" id="send">音を送信</button><button class="secondary" id="stopSend">停止</button></div>
+<div class="status" id="sendStatus">待機中</div>
+</section>
+
+<section class="card">
+<h2>② 受信側</h2>
+<p class="hint">別のiPadでマイクを許可して受信を開始します。送信側の近くに置いてください。</p>
+<div class="row"><button class="primary" id="receive">マイク受信を開始</button><button class="secondary" id="stopReceive">停止</button></div>
+<div class="status" id="receiveStatus">待機中</div>
+<div class="meter"><i id="level"></i></div>
+<div class="small" id="freqReadout">検出周波数: —</div>
+<div class="result" id="result">—</div>
+</section>
+
+<section class="card">
+<h2>③ 端末チェック</h2>
+<p class="hint">このテストでは「本当に高周波を送受信できるか」を確認することも重要です。</p>
+<div class="row"><button class="primary" id="tone">テスト音を1秒出す</button></div>
+<div class="status" id="toneStatus">周波数: —</div>
+<p class="footer">※「人間には聞こえない」とは端末や年齢によって保証できません。大音量にはせず、最初は短時間で試してください。</p>
+</section>
+
+<section class="card">
+<h2>現在の実験仕様</h2>
+<p><span class="pill">FSK</span><span class="pill">8 bit</span><span class="pill">短文</span><span class="pill">近距離</span></p>
+<div class="status">
+<div>PREAMBLE → DATA LENGTH → PAYLOAD → END</div>
+<div class="small" style="margin-top:7px">まずは通信成立を優先。成功後に速度・距離・騒音耐性・双方向化を測定します。</div>
+</div>
+</section>
+</div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+let txCtx=null,osc=null,gain=null,rxCtx=null,analyser=null,stream=null,rxTimer=null;
+const SYMBOL_MS=90, START=[1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0], END=[1,1,1,1,0,0,0,0];
+function bitsFor(text){
+  const bytes=new TextEncoder().encode(text), bits=[];
+  for(const b of START) bits.push(b);
+  for(let i=7;i>=0;i--) bits.push((bytes.length>>i)&1);
+  for(const b of bytes) for(let i=7;i>=0;i--) bits.push((b>>i)&1);
+  for(const b of END) bits.push(b);
+  return bits;
+}
+function setStatus(el,msg,ok=false){$(el).textContent=msg;$(el).className=ok?"status ok":"status"}
+async function audioContext(){
+  if(!txCtx) txCtx=new (window.AudioContext||window.webkitAudioContext)();
+  if(txCtx.state==="suspended") await txCtx.resume();
+  return txCtx;
+}
+async function sendBits(){
+  const ctx=await audioContext(), base=Number($("freq").value), f0=base, f1=base+1000;
+  const bits=bitsFor($("message").value.slice(0,24));
+  if(osc){try{osc.stop()}catch{}}
+  osc=ctx.createOscillator();gain=ctx.createGain();
+  osc.type="sine";gain.gain.value=0.055;osc.connect(gain).connect(ctx.destination);osc.start();
+  let t=ctx.currentTime+0.08;
+  for(const bit of bits){osc.frequency.setValueAtTime(bit?f1:f0,t);t+=SYMBOL_MS/1000}
+  gain.gain.setValueAtTime(0.055,t-0.05);gain.gain.linearRampToValueAtTime(0,t+0.03);
+  osc.stop(t+0.04);
+  setStatus("sendStatus","送信中… "+bits.length+" symbols");
+  osc.onended=()=>{osc=null;setStatus("sendStatus","送信完了",true)}
+}
+$("send").onclick=sendBits;
+$("stopSend").onclick=()=>{if(osc){try{osc.stop()}catch{}osc=null}setStatus("sendStatus","停止")}
+$("tone").onclick=async()=>{
+ const ctx=await audioContext(),f=Number($("freq").value)+500,o=ctx.createOscillator(),g=ctx.createGain();
+ o.frequency.value=f;o.type="sine";g.gain.value=.04;o.connect(g).connect(ctx.destination);o.start();
+ setStatus("toneStatus","周波数: "+f+" Hz を1秒再生");
+ setTimeout(()=>{try{o.stop()}catch{}},1000);
+};
+function nearestFreq(mags,sr,n,base){
+ let best={v:0,f:0};
+ for(const f of [base,base+1000]){const bin=Math.round(f*n/sr),v=mags[bin]||0;if(v>best.v)best={v,f}}
+ return best;
+}
+async function startRx(){
+ try{
+  rxCtx=new (window.AudioContext||window.webkitAudioContext)();await rxCtx.resume();
+  stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
+  const src=rxCtx.createMediaStreamSource(stream);analyser=rxCtx.createAnalyser();analyser.fftSize=4096;analyser.smoothingTimeConstant=.15;src.connect(analyser);
+  const base=Number($("freq").value), data=new Uint8Array(analyser.frequencyBinCount), history=[];let last=performance.now(),bits=[];
+  const loop=()=>{
+   analyser.getByteFrequencyData(data);
+   const best=nearestFreq(data,rxCtx.sampleRate,analyser.fftSize,base);
+   const norm=Math.max(0,(best.v-128)/127);$("level").style.width=Math.min(100,norm*180)+"%";$("freqReadout").textContent="検出周波数: "+(best.f||"—")+" Hz / 強度 "+best.v;
+   const now=performance.now();
+   if(now-last>=SYMBOL_MS){
+     history.push(best.v>145? (best.f===base+1000?1:0):-1);last=now;
+     if(history.length>5){const b=history[history.length-1];if(b>=0)bits.push(b);history.length=0}
+     if(bits.length>16+8){
+       const pre=bits.slice(0,16).join(""),target=START.join("");
+       if(pre===target){
+         const lenBits=bits.slice(16,24),len=lenBits.reduce((a,b)=>a*2+b,0);
+         if(len>0&&len<=24&&bits.length>=24+len*8){
+           const out=[];for(let i=0;i<len;i++){let v=0;for(let j=0;j<8;j++)v=(v<<1)|bits[24+i*8+j];out.push(v)}
+           try{$("result").textContent=new TextDecoder().decode(new Uint8Array(out));setStatus("receiveStatus","データを復元しました",true);bits=[]}catch{}
+         }
+       } else if(bits.length>32){bits=bits.slice(-24)}
+     }
+   }
+   rxTimer=requestAnimationFrame(loop);
+  };
+  setStatus("receiveStatus","受信中… マイク使用中");loop();
+ }catch(e){setStatus("receiveStatus","マイクを開始できません: "+(e.message||e))}
+}
+$("receive").onclick=startRx;
+$("stopReceive").onclick=()=>{
+ if(rxTimer)cancelAnimationFrame(rxTimer);rxTimer=null;
+ if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;
+ if(rxCtx){rxCtx.close();rxCtx=null}analyser=null;setStatus("receiveStatus","停止")
+};
+</script>
+</body>
+</html>
