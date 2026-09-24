@@ -77,6 +77,7 @@ function AudioTestLauncher() {
             <iframe
               title="音通信テスト"
               src="./audio.html"
+              allow="microphone"
               style={{
                 width: "100%",
                 height: "100%",
