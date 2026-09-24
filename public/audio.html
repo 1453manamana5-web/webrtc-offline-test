@@ -79,16 +79,21 @@ function classify(data,ctx,n,base){
   const v0=bandPeak(data,ctx.sampleRate,n,base);
   const v1=bandPeak(data,ctx.sampleRate,n,base+1000);
   const strongest=Math.max(v0,v1);
-  const sum=v0+v1;
-  const ratio=sum>0?(v1-v0)/sum:0;
-  const noiseFloor=118;
-  const minRatio=.08;
-  let bit=-1;
-  if(strongest>=noiseFloor&&Math.abs(ratio)>=minRatio) bit=ratio>0?1:0;
+  const contrast=Math.abs(v1-v0);
+  const ratio=(v1-v0)/(v0+v1||1);
+
+  // STEP 2: 0側と1側のどちらが強いかを直接判定する。
+  // 無音・弱い信号だけは -1 にして、実信号では0/1を返す。
+  const SIGNAL_FLOOR=90;
+  const MIN_CONTRAST=3;
+  const bit=(strongest>=SIGNAL_FLOOR&&contrast>=MIN_CONTRAST)
+    ? (v1>v0?1:0)
+    : -1;
+
   return {
     bit,
     strength:strongest,
-    contrast:Math.abs(v1-v0),
+    contrast,
     ratio,
     v0,
     v1
