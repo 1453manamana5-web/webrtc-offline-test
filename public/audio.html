@@ -66,15 +66,18 @@ $("tone").onclick=async()=>{
   setStatus("toneStatus","周波数: "+f+" Hz を1秒再生");setTimeout(()=>{try{o.stop()}catch{}},1000)
 };
 
-function frequencyEnergy(data,ctx,n,f){
-  const bin=f*n/ctx.sampleRate;
-  const lo=Math.max(0,Math.floor(bin)-2),hi=Math.min(data.length-1,Math.ceil(bin)+2);
-  let sum=0;for(let i=lo;i<=hi;i++)sum+=data[i];return sum/(hi-lo+1);
+function bandPeak(data,ctx,n,f){
+  const center=f*n/ctx.sampleRate;
+  const lo=Math.max(0,Math.floor(center)-6);
+  const hi=Math.min(data.length-1,Math.ceil(center)+6);
+  let peak=0;
+  for(let i=lo;i<=hi;i++)if(data[i]>peak)peak=data[i];
+  return peak;
 }
 function classify(data,ctx,n,base){
-  const e0=frequencyEnergy(data,ctx,n,base),e1=frequencyEnergy(data,ctx,n,base+1000);
+  const e0=bandPeak(data,ctx,n,base),e1=bandPeak(data,ctx,n,base+1000);
   const strongest=Math.max(e0,e1),other=Math.min(e0,e1),contrast=strongest-other;
-  if(strongest<96)return {bit:-1,strength:strongest,contrast};
+  if(strongest<70 || contrast<4)return {bit:-1,strength:strongest,contrast};
   return {bit:e1>e0?1:0,strength:strongest,contrast};
 }
 function majority(samples){
@@ -125,7 +128,8 @@ async function startRx(){
       const c=classify(data,rxCtx,analyser.fftSize,base);
       const norm=Math.max(0,(c.strength-128)/127);
       $("level").style.width=Math.min(100,norm*180)+"%";
-      $("freqReadout").textContent="検出周波数: "+(c.bit<0?"—":(c.bit?base+1000:base))+" Hz / 強度 "+Math.round(c.strength)+" / 差 "+Math.round(c.contrast);
+      const detectedFreq=c.strength<70?"—":(c.bit<0?(c.contrast>=0&&bandPeak(data,rxCtx,analyser.fftSize,base+1000)>bandPeak(data,rxCtx,analyser.fftSize,base)?base+1000:base):(c.bit?base+1000:base));
+      $("freqReadout").textContent="検出周波数: "+detectedFreq+" Hz / 強度 "+Math.round(c.strength)+" / 差 "+Math.round(c.contrast);
       const now=performance.now();
       if(now-lastSample>=sampleStep){
         lastSample=now;symbolSamples.push(c.bit);
