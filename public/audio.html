@@ -67,28 +67,32 @@ $("tone").onclick=async()=>{
   setStatus("toneStatus","周波数: "+f+" Hz を1秒再生");setTimeout(()=>{try{o.stop()}catch{}},1000)
 };
 
-function nearestFreq(data,sr,n,base){
-  const values=[base,base+1000].map(f=>{
-    const center=Math.round(f*n/sr);
-    let peak=0;
-    for(let i=Math.max(0,center-1);i<=Math.min(data.length-1,center+1);i++){
-      if(data[i]>peak)peak=data[i];
-    }
-    return {v:peak,f};
-  });
-  return values[1].v>values[0].v?values[1]:values[0];
+function bandPeak(data,sr,n,f){
+  const center=Math.round(f*n/sr);
+  let peak=0;
+  for(let i=Math.max(0,center-2);i<=Math.min(data.length-1,center+2);i++){
+    if(data[i]>peak)peak=data[i];
+  }
+  return peak;
 }
 function classify(data,ctx,n,base){
-  const a=nearestFreq(data,ctx.sampleRate,n,base);
-  const bin0=Math.round(base*n/ctx.sampleRate);
-  const bin1=Math.round((base+1000)*n/ctx.sampleRate);
-  let v0=0,v1=0;
-  for(let i=Math.max(0,bin0-1);i<=Math.min(data.length-1,bin0+1);i++)v0=Math.max(v0,data[i]);
-  for(let i=Math.max(0,bin1-1);i<=Math.min(data.length-1,bin1+1);i++)v1=Math.max(v1,data[i]);
+  const v0=bandPeak(data,ctx.sampleRate,n,base);
+  const v1=bandPeak(data,ctx.sampleRate,n,base+1000);
   const strongest=Math.max(v0,v1);
-  const contrast=Math.abs(v1-v0);
-  const bit=strongest>=145&&contrast>=4?(v1>v0?1:0):-1;
-  return {bit,strength:strongest,contrast,v0,v1};
+  const sum=v0+v1;
+  const ratio=sum>0?(v1-v0)/sum:0;
+  const noiseFloor=118;
+  const minRatio=.08;
+  let bit=-1;
+  if(strongest>=noiseFloor&&Math.abs(ratio)>=minRatio) bit=ratio>0?1:0;
+  return {
+    bit,
+    strength:strongest,
+    contrast:Math.abs(v1-v0),
+    ratio,
+    v0,
+    v1
+  };
 }
 function majority(samples){
   const valid=samples.filter(v=>v>=0);
@@ -136,10 +140,10 @@ async function startRx(){
       if(!analyser)return;
       analyser.getByteFrequencyData(data);
       const c=classify(data,rxCtx,analyser.fftSize,base);
-      const norm=Math.max(0,(c.strength-145)/110);
+      const norm=Math.max(0,(c.strength-118)/110);
       $("level").style.width=Math.min(100,norm*180)+"%";
-      const detectedFreq=c.strength>145?(c.bit?base+1000:base):"—";
-      $("freqReadout").textContent="検出周波数: "+detectedFreq+" Hz / 強度 "+Math.round(c.strength)+" / 0:"+Math.round(c.v0)+" 1:"+Math.round(c.v1)+" 差:"+Math.round(c.contrast);
+      const detectedFreq=c.bit===0?base:c.bit===1?base+1000:"—";
+      $("freqReadout").textContent="検出周波数: "+detectedFreq+" Hz / 強度 "+Math.round(c.strength)+" / 0:"+Math.round(c.v0)+" 1:"+Math.round(c.v1)+" 差:"+Math.round(c.contrast)+" 比率:"+(c.ratio*100).toFixed(1)+"%";
       $("symbolReadout").textContent="判定シンボル: "+(c.bit>=0?c.bit:"—");
       const now=performance.now();
       if(now-lastSample>=sampleStep){
