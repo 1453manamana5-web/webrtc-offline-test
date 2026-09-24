@@ -22,9 +22,10 @@ label{display:block;font-size:13px;margin:12px 0 6px;opacity:.8}.pill{display:in
 <section class="card"><h2>① 送信側</h2><p class="hint">この端末から音を出します。最初は短い文字列で試してください。</p>
 <label for="message">送信データ</label><textarea id="message">TEST-001</textarea>
 <label for="freq">通信帯域</label><select id="freq" style="width:100%;padding:12px;border-radius:12px;background:#081321;color:#fff;border:1px solid #344862;font:inherit"><option value="17500">17.5 / 18.5 kHz</option><option value="16500">16.5 / 17.5 kHz</option><option value="18500">18.5 / 19.5 kHz</option></select>
-<div class="row"><button class="primary" id="send">音を送信</button><button class="secondary" id="stopSend">停止</button></div><div class="status" id="sendStatus">待機中</div></section>
+<label for="protocol">通信方式</label><select id="protocol" style="width:100%;padding:12px;border-radius:12px;background:#081321;color:#fff;border:1px solid #344862;font:inherit"><option value="legacy">従来FSK（安定性優先）</option><option value="dos2">Data Over Sound v2（4-FSK + CRC）</option></select>
+<div class="row"><button class="primary" id="send">音を送信</button><button class="secondary" id="stopSend">停止</button></div><div class="status" id="sendStatus">待機中</div><div class="small" id="protocolStatus">方式: 従来FSK</div></section>
 <section class="card"><h2>② 受信側</h2><p class="hint">別のiPadでマイクを許可して受信を開始します。送信側の近くに置いてください。</p>
-<div class="row"><button class="primary" id="receive">マイク受信を開始</button><button class="secondary" id="stopReceive">停止</button></div><div class="status" id="receiveStatus">待機中</div><div class="meter"><i id="level"></i></div><div class="small" id="freqReadout">検出周波数: —</div><div class="result" id="result">—</div><div class="debug" id="decodeDebug">デコーダ: 待機中</div></section>
+<div class="row"><button class="primary" id="receive">マイク受信を開始</button><button class="secondary" id="stopReceive">停止</button></div><div class="status" id="receiveStatus">待機中</div><div class="small" id="rxProtocolStatus">方式: 従来FSK</div><div class="meter"><i id="level"></i></div><div class="small" id="freqReadout">検出周波数: —</div><div class="result" id="result">—</div><div class="debug" id="decodeDebug">デコーダ: 待機中</div></section>
 <section class="card"><h2>③ 端末チェック</h2><p class="hint">このテストでは「本当に高周波を送受信できるか」を確認することも重要です。</p><div class="row"><button class="primary" id="tone">テスト音を1秒出す</button></div><div class="status" id="toneStatus">周波数: —</div><p class="footer">※「人間には聞こえない」とは端末や年齢によって保証できません。大音量にはせず、最初は短時間で試してください。</p></section>
 <section class="card"><h2>現在の実験仕様</h2><p><span class="pill">FSK</span><span class="pill">8 bit</span><span class="pill">短文</span><span class="pill">近距離</span></p><div class="status"><div>PREAMBLE → DATA LENGTH → PAYLOAD → END</div><div class="small" style="margin-top:7px">24シンボルの交互プリアンブルで同期し、その直後の長さ情報とUTF-8データを復元します。</div></div></section>
 </div></main>
@@ -161,6 +162,100 @@ async function startRx(){
   }catch(e){setStatus("receiveStatus","マイクを開始できません: "+(e.message||e))}
 }
 $("receive").onclick=startRx;
+
+function currentProtocol(){return $("protocol").value}
+$("protocol").onchange=()=>{
+  const v=currentProtocol(), label=v==="dos2"?"Data Over Sound v2":"従来FSK";
+  $("protocolStatus").textContent="方式: "+label;
+  $("rxProtocolStatus").textContent="方式: "+label;
+  setStatus("sendStatus",v==="dos2"?"v2送信モード":"従来FSK送信モード");
+  setStatus("receiveStatus",v==="dos2"?"v2受信モード":"従来FSK受信モード");
+};
+function dos2EncodeText(text){
+  const frame=dos2Frame(text);
+  return frame;
+}
+async function sendDos2(){
+  const ctx=await audioContext();
+  const frame=dos2EncodeText($("message").value);
+  if(osc){try{osc.stop()}catch{}}
+  osc=ctx.createOscillator();gain=ctx.createGain();
+  osc.type="sine";gain.gain.value=.045;osc.connect(gain).connect(ctx.destination);osc.start();
+  let t=ctx.currentTime+.12;
+  for(const symbol of frame){
+    osc.frequency.setValueAtTime(DOS2_FREQS[symbol],t);
+    t+=DOS2_SYMBOL_MS/1000;
+  }
+  gain.gain.setValueAtTime(.045,t-.05);
+  gain.gain.linearRampToValueAtTime(0,t+.03);
+  osc.stop(t+.04);
+  setStatus("sendStatus","v2送信中… "+frame.length+" symbols");
+  $("protocolStatus").textContent="方式: Data Over Sound v2 / 4-FSK";
+  osc.onended=()=>{osc=null;setStatus("sendStatus","v2送信完了",true)};
+}
+function nearestDos2Symbol(data,sr,n){
+  return dos2Classify(data,sr,n);
+}
+async function startDos2Rx(){
+  try{
+    if(rxCtx){try{await rxCtx.close()}catch{}}
+    rxCtx=new(window.AudioContext||window.webkitAudioContext)();await rxCtx.resume();
+    stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
+    const src=rxCtx.createMediaStreamSource(stream);
+    analyser=rxCtx.createAnalyser();analyser.fftSize=4096;analyser.smoothingTimeConstant=.05;src.connect(analyser);
+    const data=new Uint8Array(analyser.frequencyBinCount);
+    const sampleStep=10;
+    let last=performance.now(),samples=[],symbols=[],decoded=false;
+    setStatus("receiveStatus","v2受信中… プリアンブルを探しています");
+    $("rxProtocolStatus").textContent="方式: Data Over Sound v2 / 4-FSK";
+    $("result").textContent="—";$("decodeDebug").textContent="v2デコーダ: 同期待ち";
+    const loop=()=>{
+      if(!analyser)return;
+      analyser.getByteFrequencyData(data);
+      const c=nearestDos2Symbol(data,rxCtx.sampleRate,analyser.fftSize);
+      const norm=Math.max(0,(c.power-80)/120);
+      $("level").style.width=Math.min(100,norm*180)+"%";
+      $("freqReadout").textContent="v2検出周波数: "+(c.symbol>=0?DOS2_FREQS[c.symbol]:"—")+" Hz / 強度 "+Math.round(c.power)+" / 差 "+Math.round(c.contrast);
+      const now=performance.now();
+      if(now-last>=sampleStep){
+        last=now;
+        samples.push(c.symbol);
+        if(samples.length>=Math.round(DOS2_SYMBOL_MS/sampleStep)){
+          const valid=samples.filter(v=>v>=0);
+          let sym=-1;
+          if(valid.length>=2){
+            const counts=[0,0,0,0];valid.forEach(v=>counts[v]++);
+            sym=counts.indexOf(Math.max(...counts));
+          }
+          samples=[];
+          if(sym>=0){
+            symbols.push(sym);
+            if(symbols.length>120)symbols=symbols.slice(-120);
+            const text=dos2Decode(symbols);
+            if(text!==null){
+              $("result").textContent=text;
+              $("decodeDebug").textContent="v2デコーダ: CRC検証成功";
+              setStatus("receiveStatus","v2データを復元しました",true);
+              decoded=true;
+              symbols=[];
+            }else if(!decoded){
+              const tail=symbols.slice(-DOS2_PREAMBLE.length);
+              const pre=tail.length===DOS2_PREAMBLE.length&&tail.every((v,i)=>v===DOS2_PREAMBLE[i]);
+              $("decodeDebug").textContent=pre?"v2デコーダ: プリアンブル検出":"v2デコーダ: 同期信号を探索中";
+            }
+          }
+        }
+      }
+      rxTimer=requestAnimationFrame(loop);
+    };
+    loop();
+  }catch(e){setStatus("receiveStatus","v2マイク開始失敗: "+(e.message||e))}
+}
+const originalSend=$("send").onclick;
+$("send").onclick=()=>currentProtocol()==="dos2"?sendDos2():originalSend();
+const originalReceive=$("receive").onclick;
+$("receive").onclick=()=>currentProtocol()==="dos2"?startDos2Rx():originalReceive();
+
 $("stopReceive").onclick=()=>{
   if(rxTimer)cancelAnimationFrame(rxTimer);rxTimer=null;
   if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;
