@@ -25,7 +25,7 @@ label{display:block;font-size:13px;margin:12px 0 6px;opacity:.8}.pill{display:in
 <label for="protocol">通信方式</label><select id="protocol" style="width:100%;padding:12px;border-radius:12px;background:#081321;color:#fff;border:1px solid #344862;font:inherit"><option value="legacy">従来FSK（安定性優先）</option><option value="dos2">Data Over Sound v2（4-FSK + CRC）</option></select>
 <div class="row"><button class="primary" id="send">音を送信</button><button class="secondary" id="stopSend">停止</button></div><div class="status" id="sendStatus">待機中</div><div class="small" id="protocolStatus">方式: 従来FSK</div></section>
 <section class="card"><h2>② 受信側</h2><p class="hint">別のiPadでマイクを許可して受信を開始します。送信側の近くに置いてください。</p>
-<div class="row"><button class="primary" id="receive">マイク受信を開始</button><button class="secondary" id="stopReceive">停止</button></div><div class="status" id="receiveStatus">待機中</div><div class="small" id="rxProtocolStatus">方式: 従来FSK</div><div class="meter"><i id="level"></i></div><div class="small" id="freqReadout">検出周波数: —</div><div class="result" id="result">—</div><div class="debug" id="decodeDebug">デコーダ: 待機中</div></section>
+<div class="row"><button class="primary" id="receive">マイク受信を開始</button><button class="secondary" id="stopReceive">停止</button></div><div class="status" id="receiveStatus">待機中</div><div class="small" id="rxProtocolStatus">方式: 従来FSK</div><div class="meter"><i id="level"></i></div><div class="small" id="freqReadout">検出周波数: —</div><div class="small" id="symbolReadout">判定シンボル: —</div><div class="result" id="result">—</div><div class="debug" id="decodeDebug">デコーダ: 待機中</div></section>
 <section class="card"><h2>③ 端末チェック</h2><p class="hint">このテストでは「本当に高周波を送受信できるか」を確認することも重要です。</p><div class="row"><button class="primary" id="tone">テスト音を1秒出す</button></div><div class="status" id="toneStatus">周波数: —</div><p class="footer">※「人間には聞こえない」とは端末や年齢によって保証できません。大音量にはせず、最初は短時間で試してください。</p></section>
 <section class="card"><h2>現在の実験仕様</h2><p><span class="pill">FSK</span><span class="pill">8 bit</span><span class="pill">短文</span><span class="pill">近距離</span></p><div class="status"><div>PREAMBLE → DATA LENGTH → PAYLOAD → END</div><div class="small" style="margin-top:7px">24シンボルの交互プリアンブルで同期し、その直後の長さ情報とUTF-8データを復元します。</div></div></section>
 </div></main>
@@ -132,7 +132,7 @@ async function startRx(){
       const norm=Math.max(0,(c.strength-145)/110);
       $("level").style.width=Math.min(100,norm*180)+"%";
       const detectedFreq=c.strength>145?(c.bit?base+1000:base):"—";
-      $("freqReadout").textContent="検出周波数: "+detectedFreq+" Hz / 強度 "+Math.round(c.strength);
+      $("freqReadout").textContent="検出周波数: "+detectedFreq+" Hz / 強度 "+Math.round(c.strength);\n      $("symbolReadout").textContent="判定シンボル: "+(c.bit>=0?c.bit:"—");
       const now=performance.now();
       if(now-lastSample>=sampleStep){
         lastSample=now;symbolSamples.push(c.bit);
@@ -268,7 +268,7 @@ $("stopReceive").onclick=()=>{
   if(rxTimer)cancelAnimationFrame(rxTimer);rxTimer=null;
   if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;
   if(rxCtx){rxCtx.close();rxCtx=null}
-  analyser=null;$("level").style.width="0%";$("freqReadout").textContent="検出周波数: —";$("decodeDebug").textContent="デコーダ: 停止";
+  analyser=null;$("level").style.width="0%";$("freqReadout").textContent="検出周波数: —";$("symbolReadout").textContent="判定シンボル: —";$("decodeDebug").textContent="デコーダ: 停止";
   setStatus("receiveStatus","停止")
 };
 
