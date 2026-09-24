@@ -74,7 +74,7 @@ function frequencyEnergy(data,ctx,n,f){
 function classify(data,ctx,n,base){
   const e0=frequencyEnergy(data,ctx,n,base),e1=frequencyEnergy(data,ctx,n,base+1000);
   const strongest=Math.max(e0,e1),other=Math.min(e0,e1),contrast=strongest-other;
-  if(strongest<128 || contrast<8)return {bit:-1,strength:strongest,contrast};
+  if(strongest<96)return {bit:-1,strength:strongest,contrast};
   return {bit:e1>e0?1:0,strength:strongest,contrast};
 }
 function majority(samples){
