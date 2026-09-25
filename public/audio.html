@@ -40,6 +40,9 @@ label{display:block;font-size:13px;margin:12px 0 6px;opacity:.8}.pill{display:in
 <option value="4">超音波 / Fast</option>
 <option value="5">超音波 / Fastest</option>
 </select>
+<label for="ggwaveVolume">送信音量 <span id="ggwaveVolumeValue">5</span></label>
+<input id="ggwaveVolume" type="range" min="1" max="10" step="1" value="5" style="width:100%;accent-color:#6ee7b7">
+<div class="small">小さいほど音は弱くなりますが、通信距離・安定性が下がる場合があります。</div>
 <div class="row">
 <button class="primary" id="ggwaveSend">ggwave送信</button>
 <button class="primary" id="ggwaveReceive">ggwave受信開始</button>
@@ -501,7 +504,7 @@ async function ggwaveSend(){
 
     const text=$( "message" ).value.slice(0,140);
     const protocol=ggwaveProtocolId();
-    const volume=10;
+    const volume=Number($("ggwaveVolume").value);
     const waveform=ggwaveModule.encode(ggwaveInstance,text,protocol,volume);
 
     const buf=ggwaveConvertTypedArray(waveform,Float32Array);
@@ -518,6 +521,7 @@ async function ggwaveSend(){
     setGgwaveStatus("ggwave: 送信中… / "+protocolNames[protocol]);
     $("ggwaveDebug").textContent="送信データ: "+text+" / "+waveform.length+" samples";
     $("ggwaveResult").textContent="—";
+    $("ggwaveVolumeValue").textContent=String(volume);
   }catch(e){
     setGgwaveStatus("ggwave送信失敗: "+(e.message||e));
   }
@@ -571,6 +575,7 @@ async function ggwaveReceive(){
   }
 }
 
+$("ggwaveVolume").oninput=()=>$("ggwaveVolumeValue").textContent=$("ggwaveVolume").value;
 $("ggwaveSend").onclick=ggwaveSend;
 $("ggwaveReceive").onclick=ggwaveReceive;
 $("ggwaveStop").onclick=async()=>{
